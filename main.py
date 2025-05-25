@@ -1,15 +1,12 @@
 from flask import Flask
 import requests
 import pandas as pd
-import time
 
 app = Flask(__name__)
 
-# إعدادات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
-# رموز الأدوات
 symbols = {
     "GOLD": "GC=F",
     "BTC/USD": "BTC-USD",
@@ -23,6 +20,19 @@ def get_data(symbol):
     df = pd.read_csv(url)
     return df
 
+def format_signal_message(name, signal, price, tp, sl):
+    return f"""{signal} {name}
+
+دخول: {price}
+الهدف (TP): {tp}
+وقف الخسارة (SL): {sl}
+"""
+
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": message}
+    requests.post(url, data=data)
+
 def check_signals():
     for name, symbol in symbols.items():
         try:
@@ -33,49 +43,33 @@ def check_signals():
             df["EMA5"] = df["Close"].ewm(span=5).mean()
             df["EMA20"] = df["Close"].ewm(span=20).mean()
 
-            last_row = df.iloc[-1]
-            prev_row = df.iloc[-2]
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
 
             signal = None
-            if prev_row["EMA5"] < prev_row["EMA20"] and last_row["EMA5"] > last_row["EMA20"]:
+            if prev["EMA5"] < prev["EMA20"] and last["EMA5"] > last["EMA20"]:
                 signal = "BUY"
-            elif prev_row["EMA5"] > prev_row["EMA20"] and last_row["EMA5"] < last_row["EMA20"]:
+            elif prev["EMA5"] > prev["EMA20"] and last["EMA5"] < last["EMA20"]:
                 signal = "SELL"
 
             if signal:
-                close_price = last_row["Close"]
-                tp = round(close_price * 1.001, 2)
-                sl = round(close_price * 0.999, 2)
-
-                msg = f"""{signal} {name}
-
-دخول:
-{name} @ {round(close_price, 2)}
-
-الهدف (TP):
-{name} @ {tp}
-
-وقف الخسارة (SL):
-{name} @ {sl}
-"""
+                entry = round(last["Close"], 2)
+                tp = round(entry * 1.001, 2)
+                sl = round(entry * 0.999, 2)
+                msg = format_signal_message(name, signal, entry, tp, sl)
                 send_telegram(msg)
 
         except Exception as e:
             send_telegram(f"Error with {name}: {str(e)}")
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=data)
-
 @app.route('/')
 def home():
-    return 'Bot is running!'
+    return "Bot is running!"
 
-# إشعار تشغيل السيرفر
+# إشعار عند التشغيل
 send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
 
-# تنفيذ الفحص مرة واحدة عند التشغيل (يمكنك تعديلها لاحقًا لتكون دورية)
+# فحص الإشارات فور التشغيل
 check_signals()
 
 if __name__ == '__main__':
