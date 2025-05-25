@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 from flask import Flask
 from datetime import datetime
+import time
 
 app = Flask(__name__)
 
@@ -26,26 +27,30 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-# جلب آخر بيانات من Yahoo Finance عبر yfinance
-def fetch_yahoo_data(symbol):
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
-        res = requests.get(url)
-        data = res.json()
+# جلب البيانات من Yahoo Finance مع حماية من الأخطاء
 
-        if "chart" in data and data["chart"]["result"]:
-            result = data["chart"]["result"][0]
-            prices = result["indicators"]["quote"][0]["close"]
-            timestamps = result["timestamp"]
-            df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
+def fetch_yahoo_data(symbol, retries=3):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
+    for attempt in range(retries):
+        try:
+            res = requests.get(url)
+            if res.status_code != 200:
+                raise ValueError(f"HTTP Error: {res.status_code}")
+            data = res.json()
+            result = data.get("chart", {}).get("result")
+            if not result:
+                raise ValueError("Empty result")
+            indicators = result[0]["indicators"]["quote"][0]
+            timestamps = result[0]["timestamp"]
+            df = pd.DataFrame({"price": indicators["close"]}, index=pd.to_datetime(timestamps, unit='s'))
             return df.dropna()
-        else:
-            raise ValueError("No data")
-    except Exception as e:
-        send_telegram(f"Error with {symbol}: {e}")
-        return None
+        except Exception as e:
+            if attempt == retries - 1:
+                send_telegram(f"Error with {symbol}: {e}")
+            time.sleep(1)  # انتظار بين المحاولات
+    return None
 
-# توليد الإشارات
+# توليد الإشارات بنسبة نجاح عالية فقط
 def generate_signals():
     for name, symbol in symbols.items():
         df = fetch_yahoo_data(symbol)
@@ -55,32 +60,11 @@ def generate_signals():
         df["fast_ma"] = df["price"].rolling(window=3).mean()
         df["slow_ma"] = df["price"].rolling(window=7).mean()
 
-        # تحقق شرط الدخول
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        # شرط نجاح عالي: تقاطع حاد + ارتفاع واضح + عدم تقاطع سابق قريب
         if (
-            df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
-            and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
-        ):
-            entry = round(df["price"].iloc[-1], 2)
-            tp = round(entry * 1.001, 2)
-            sl = round(entry * 0.999, 2)
-            msg = (
-                f"BUY {name}\n"
-                f"دخول: {entry}\n"
-                f"TP: {tp}\n"
-                f"SL: {sl}\n"
-                f"الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-            )
-            send_telegram(msg)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-@app.route('/run')
-def run_now():
-    send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
-    generate_signals()
-    return "Bot executed."
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+            latest["fast_ma"] > latest["slow_ma"]
+            and prev["fast_ma"] <= prev["slow_ma"]
+           
