@@ -6,10 +6,9 @@ import time
 
 app = Flask(__name__)
 
-BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
-CHAT_ID = "6301054652"
+BOT_TOKEN = "توكن_البوت"
+CHAT_ID = "معرف_الشات"
 
-# أدوات التداول
 symbols = {
     "GOLD": "XAUUSD=X",
     "BTC/USD": "BTC-USD",
@@ -18,38 +17,44 @@ symbols = {
     "US100": "^NDX"
 }
 
-def send_telegram(msg):
+# ترتيب الأدوات بالدور للتقليل من ضغط الطلبات
+symbol_list = list(symbols.items())
+symbol_index = 0
+
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Telegram Error:", e)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+    except:
+        pass
 
-def fetch_data(symbol):
+def fetch_yahoo_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
-        r = requests.get(url)
-        data = r.json()
-
-        if "chart" in data and data["chart"]["result"]:
-            result = data["chart"]["result"][0]
-            prices = result["indicators"]["quote"][0]["close"]
-            times = result["timestamp"]
-            df = pd.DataFrame({"price": prices}, index=pd.to_datetime(times, unit='s'))
-            return df.dropna()
-        else:
-            raise ValueError("Empty result")
+        res = requests.get(url)
+        if res.status_code == 429:
+            raise Exception("⚠️ HTTP 429 - Too Many Requests")
+        data = res.json()
+        result = data.get("chart", {}).get("result", [])[0]
+        prices = result["indicators"]["quote"][0]["close"]
+        timestamps = result["timestamp"]
+        df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
+        return df.dropna()
     except Exception as e:
         send_telegram(f"⚠️ Error fetching {symbol}: {e}")
         return None
 
-def generate_signal(name, symbol):
-    df = fetch_data(symbol)
-    if df is None or len(df) < 7:
+def generate_signal():
+    global symbol_index
+    name, symbol = symbol_list[symbol_index]
+    symbol_index = (symbol_index + 1) % len(symbol_list)
+
+    df = fetch_yahoo_data(symbol)
+    if df is None or len(df) < 10:
         return
 
-    df["fast"] = df["price"].rolling(3).mean()
-    df["slow"] = df["price"].rolling(7).mean()
+    df["fast"] = df["price"].rolling(window=3).mean()
+    df["slow"] = df["price"].rolling(window=7).mean()
 
     if df["fast"].iloc[-1] > df["slow"].iloc[-1] and df["fast"].iloc[-2] <= df["slow"].iloc[-2]:
         entry = round(df["price"].iloc[-1], 2)
@@ -64,18 +69,14 @@ def generate_signal(name, symbol):
         )
         send_telegram(msg)
 
-@app.route("/")
+@app.route('/')
 def home():
-    return "Bot is working."
+    return "Bot Running!"
 
-@app.route("/run")
-def run_bot():
-    # كل تشغيل يتم تحليل أداة واحدة فقط لتقليل الضغط
-    now_index = int(datetime.utcnow().minute / 3) % len(symbols)
-    name = list(symbols.keys())[now_index]
-    symbol = symbols[name]
-    generate_signal(name, symbol)
-    return f"Checked {name}"
+@app.route('/run')
+def run():
+    generate_signal()
+    return "Signal checked."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
