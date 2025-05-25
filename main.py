@@ -1,79 +1,84 @@
-import requests
 from flask import Flask
+import requests
 import pandas as pd
 import time
+import threading
+from datetime import datetime
+import yfinance as yf
 
 app = Flask(__name__)
 
-# بيانات تيليجرام
+# إعدادات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
-SERVER_STARTED = False  # علم لتفادي تكرار رسالة التشغيل
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-# دالة إرسال رسالة تيليجرام
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
+# قائمة الرموز
+SYMBOLS = {
+    "GOLD": "GC=F",
+    "BTC/USD": "BTC-USD",
+    "ETH/USD": "ETH-USD",
+    "US30": "^DJI",
+    "US100": "^NDX"
+}
+
+# منع تكرار رسالة التشغيل
+sent_startup_message = False
+
+def send_telegram_message(text):
     try:
-        requests.post(url, data=data)
+        requests.post(API_URL, data={"chat_id": CHAT_ID, "text": text})
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram Error:", e)
 
-# عند تشغيل السيرفر
+def check_signals(symbol_name, yf_symbol):
+    try:
+        df = yf.download(yf_symbol, interval='1m', period='1d')
+
+        if df.empty or len(df) < 2:
+            return
+
+        df['MA5'] = df['Close'].rolling(window=5).mean()
+        df['MA10'] = df['Close'].rolling(window=10).mean()
+
+        if df['MA5'].isnull().any() or df['MA10'].isnull().any():
+            return
+
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        # تقاطع المتوسطات
+        if prev['MA5'] < prev['MA10'] and latest['MA5'] > latest['MA10']:
+            direction = "BUY"
+        elif prev['MA5'] > prev['MA10'] and latest['MA5'] < latest['MA10']:
+            direction = "SELL"
+        else:
+            return  # لا يوجد إشارة
+
+        msg = f"{direction} {symbol_name}\n"
+        msg += f"دخول: Ticker\n{symbol_name}  {latest['Close']}\n"
+        msg += f"TP: Ticker\n{symbol_name}  {latest['Close'] + 10}\n"
+        msg += f"SL: Ticker\n{symbol_name}  {latest['Close'] - 10}"
+        send_telegram_message(msg)
+
+    except Exception as e:
+        send_telegram_message(f"Error with {symbol_name}: {e}")
+
+def run_bot():
+    global sent_startup_message
+    if not sent_startup_message:
+        send_telegram_message("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
+        sent_startup_message = True
+
+    while True:
+        for name, symbol in SYMBOLS.items():
+            check_signals(name, symbol)
+        time.sleep(300)  # كل 5 دقائق
+
 @app.route('/')
 def home():
     return "Bot is running!"
 
-# أدوات التداول لمراقبتها
-symbols = ["GOLD", "BTC/USD", "ETH/USD", "US30", "US100"]
-
-# محاكاة استراتيجية السكالبينج
-def scalping_strategy(symbol):
-    try:
-        # محاكاة بيانات (استبدلها ببيانات حقيقية من API في مشروعك النهائي)
-        data = {
-            "signal": ["BUY"], 
-            "price": [107683.02], 
-            "tp": [107693.02], 
-            "sl": [107673.02]
-        }
-        df = pd.DataFrame(data)
-
-        if df.empty:
-            return  # تجاهل لو ما فيه بيانات
-
-        signal = df.loc[0, "signal"]
-        entry = df.loc[0, "price"]
-        tp = df.loc[0, "tp"]
-        sl = df.loc[0, "sl"]
-
-        message = (
-            f"{signal} {symbol}\n"
-            f"دخول: Ticker\n{symbol}  {entry}\n"
-            f"TP: Ticker\n{symbol}  {tp}\n"
-            f"SL: Ticker\n{symbol}  {sl}"
-        )
-        send_telegram(message)
-
-    except IndexError:
-        send_telegram(f"Error with {symbol}: No data available (IndexError)")
-    except Exception as e:
-        send_telegram(f"Error with {symbol}: {str(e)}")
-
-# تشغيل كل 5 دقائق
-def run_bot():
-    global SERVER_STARTED
-    if not SERVER_STARTED:
-        send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
-        SERVER_STARTED = True
-
-    while True:
-        for symbol in symbols:
-            scalping_strategy(symbol)
-        time.sleep(300)  # انتظر 5 دقائق
-
-# بدء البوت
 if __name__ == '__main__':
-    from threading import Thread
-    Thread(target=run_bot).start()
+    threading.Thread(target=run_bot).start()
     app.run(host='0.0.0.0', port=10000)
