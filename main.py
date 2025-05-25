@@ -2,7 +2,6 @@ import requests
 import pandas as pd
 from flask import Flask
 from datetime import datetime
-import time
 
 app = Flask(__name__)
 
@@ -27,11 +26,15 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-# جلب آخر بيانات من Yahoo Finance
+# جلب البيانات من Yahoo Finance
 def fetch_yahoo_data(symbol, name):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
         res = requests.get(url)
+
+        if res.status_code != 200:
+            raise ValueError(f"HTTP {res.status_code} - {res.text[:100]}")
+
         data = res.json()
 
         if "chart" in data and data["chart"]["result"]:
@@ -41,9 +44,9 @@ def fetch_yahoo_data(symbol, name):
             df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
             return df.dropna()
         else:
-            raise ValueError("No valid data returned")
+            raise ValueError("Empty chart data or no result")
     except Exception as e:
-        send_telegram(f"Error fetching {symbol} ({name}): {e}")
+        send_telegram(f"⚠️ Error fetching {symbol} ({name}):\n{e}")
         return None
 
 # توليد الإشارات
@@ -51,7 +54,6 @@ def generate_signals():
     for name, symbol in symbols.items():
         df = fetch_yahoo_data(symbol, name)
         if df is None or len(df) < 10:
-            time.sleep(5)
             continue
 
         df["fast_ma"] = df["price"].rolling(window=3).mean()
@@ -72,8 +74,6 @@ def generate_signals():
                 f"الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
             )
             send_telegram(msg)
-
-        time.sleep(5)  # تأخير لتجنب الضغط على API
 
 @app.route('/')
 def home():
