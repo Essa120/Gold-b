@@ -1,79 +1,86 @@
 import requests
 import pandas as pd
-from datetime import datetime
 from flask import Flask
-import threading
-import time
+from datetime import datetime
 
 app = Flask(__name__)
 
+# إعدادات البوت
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
-SEND_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
+# الأدوات ورموزها من Yahoo Finance
 symbols = {
-    "GOLD": "XAUUSD",
+    "GOLD": "XAUUSD=X",
     "BTC/USD": "BTC-USD",
     "ETH/USD": "ETH-USD",
     "US30": "^DJI",
     "US100": "^NDX"
 }
 
-def send_message(text):
+# إرسال رسالة إلى تليجرام
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(SEND_URL, data={"chat_id": CHAT_ID, "text": text})
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
     except Exception as e:
-        print("Failed to send message:", e)
+        print("Telegram Error:", e)
 
-def fetch_data(symbol):
+# جلب آخر بيانات من Yahoo Finance عبر yfinance
+def fetch_yahoo_data(symbol):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
-        response = requests.get(url)
-        data = response.json()
-        timestamps = data['chart']['result'][0]['timestamp']
-        prices = data['chart']['result'][0]['indicators']['quote'][0]['close']
-        df = pd.DataFrame({"Time": pd.to_datetime(timestamps, unit='s'), "Price": prices})
-        df = df.dropna().reset_index(drop=True)
-        return df
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
+        res = requests.get(url)
+        data = res.json()
+
+        if "chart" in data and data["chart"]["result"]:
+            result = data["chart"]["result"][0]
+            prices = result["indicators"]["quote"][0]["close"]
+            timestamps = result["timestamp"]
+            df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
+            return df.dropna()
+        else:
+            raise ValueError("No data")
     except Exception as e:
-        raise RuntimeError(f"Error fetching {symbol}: {e}")
+        send_telegram(f"Error with {symbol}: {e}")
+        return None
 
-def analyze(df):
-    try:
-        df['MA5'] = df['Price'].rolling(window=5).mean()
-        df['MA10'] = df['Price'].rolling(window=10).mean()
-        if df['MA5'].iloc[-2] < df['MA10'].iloc[-2] and df['MA5'].iloc[-1] > df['MA10'].iloc[-1]:
-            return True  # Buy Signal
-        return False
-    except Exception as e:
-        raise RuntimeError(f"Analysis error: {e}")
+# توليد الإشارات
+def generate_signals():
+    for name, symbol in symbols.items():
+        df = fetch_yahoo_data(symbol)
+        if df is None or len(df) < 10:
+            continue
 
-def monitor():
-    while True:
-        for name, symbol in symbols.items():
-            try:
-                df = fetch_data(symbol)
-                if len(df) < 10:
-                    continue
-                if analyze(df):
-                    entry = df['Price'].iloc[-1]
-                    tp = round(entry * 1.001, 2)
-                    sl = round(entry * 0.999, 2)
-                    time_str = df['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')
-                    message = f"BUY {name}\n\nدخول: {entry}\nTP: {tp}\nSL: {sl}\nTime: {time_str}"
-                    send_message(message)
-            except Exception as e:
-                send_message(f"Error with {name}: {e}")
-        time.sleep(300)  # Wait 5 minutes
+        df["fast_ma"] = df["price"].rolling(window=3).mean()
+        df["slow_ma"] = df["price"].rolling(window=7).mean()
 
-@app.route("/")
-def index():
+        # تحقق شرط الدخول
+        if (
+            df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
+            and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
+        ):
+            entry = round(df["price"].iloc[-1], 2)
+            tp = round(entry * 1.001, 2)
+            sl = round(entry * 0.999, 2)
+            msg = (
+                f"BUY {name}\n"
+                f"دخول: {entry}\n"
+                f"TP: {tp}\n"
+                f"SL: {sl}\n"
+                f"الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+            )
+            send_telegram(msg)
+
+@app.route('/')
+def home():
     return "Bot is running!"
 
-def start():
-    send_message("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
-    threading.Thread(target=monitor).start()
+@app.route('/run')
+def run_now():
+    send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
+    generate_signals()
+    return "Bot executed."
 
-if __name__ == '__main__':
-    start()
-    app.run(host='0.0.0.0', port=10000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
