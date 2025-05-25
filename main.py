@@ -2,12 +2,15 @@ import requests
 import pandas as pd
 from flask import Flask
 from datetime import datetime
+import time
 
 app = Flask(__name__)
 
+# إعدادات البوت
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
+# الأدوات ورموزها من Yahoo Finance
 symbols = {
     "GOLD": "XAUUSD=X",
     "BTC/USD": "BTC-USD",
@@ -16,6 +19,7 @@ symbols = {
     "US100": "^NDX"
 }
 
+# إرسال رسالة إلى تليجرام
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -23,52 +27,53 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-def fetch_yahoo_data(symbol):
+# جلب آخر بيانات من Yahoo Finance
+def fetch_yahoo_data(symbol, name):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
-        res = requests.get(url, timeout=10)
-
-        if res.status_code != 200:
-            raise ValueError(f"HTTP Error {res.status_code}")
-
+        res = requests.get(url)
         data = res.json()
-        if "chart" not in data or data["chart"].get("result") is None:
-            raise ValueError("Empty result from API")
 
-        result = data["chart"]["result"][0]
-        prices = result["indicators"]["quote"][0]["close"]
-        timestamps = result["timestamp"]
-        df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
-        return df.dropna()
-
+        if "chart" in data and data["chart"]["result"]:
+            result = data["chart"]["result"][0]
+            prices = result["indicators"]["quote"][0]["close"]
+            timestamps = result["timestamp"]
+            df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
+            return df.dropna()
+        else:
+            raise ValueError("No valid data returned")
     except Exception as e:
-        send_telegram(f"Error fetching {symbol}: {e}")
+        send_telegram(f"Error fetching {symbol} ({name}): {e}")
         return None
 
+# توليد الإشارات
 def generate_signals():
     for name, symbol in symbols.items():
-        df = fetch_yahoo_data(symbol)
-        if df is None or len(df) < 7:
+        df = fetch_yahoo_data(symbol, name)
+        if df is None or len(df) < 10:
+            time.sleep(5)
             continue
 
         df["fast_ma"] = df["price"].rolling(window=3).mean()
         df["slow_ma"] = df["price"].rolling(window=7).mean()
 
         if (
-            df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1] and
-            df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
+            df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
+            and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
         ):
             entry = round(df["price"].iloc[-1], 2)
             tp = round(entry * 1.001, 2)
             sl = round(entry * 0.999, 2)
             msg = (
                 f"BUY {name}\n"
-                f"الدخول: {entry}\n"
-                f"الهدف TP: {tp}\n"
-                f"وقف الخسارة SL: {sl}\n"
+                f"دخول: {entry}\n"
+                f"TP: {tp}\n"
+                f"SL: {sl}\n"
                 f"الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
             )
             send_telegram(msg)
+
+        time.sleep(5)  # تأخير لتجنب الضغط على API
 
 @app.route('/')
 def home():
