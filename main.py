@@ -1,85 +1,79 @@
-from flask import Flask
 import requests
-import yfinance as yf
+import pandas as pd
+from datetime import datetime
+from flask import Flask
+import threading
 import time
-import traceback
 
 app = Flask(__name__)
 
-# إعدادات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+SEND_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-# قائمة الأدوات المالية
-SYMBOLS = {
-    "GOLD": "GC=F",
+symbols = {
+    "GOLD": "XAUUSD",
     "BTC/USD": "BTC-USD",
     "ETH/USD": "ETH-USD",
     "US30": "^DJI",
     "US100": "^NDX"
 }
 
-# دالة إرسال رسالة إلى تيليجرام
-def send_telegram_message(message):
+def send_message(text):
     try:
-        data = {"chat_id": CHAT_ID, "text": message}
-        requests.post(TELEGRAM_API, data=data)
+        requests.post(SEND_URL, data={"chat_id": CHAT_ID, "text": text})
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Failed to send message:", e)
 
-# دالة فحص الإشارة لكل أداة
-def check_signal(symbol_name, symbol_code):
+def fetch_data(symbol):
     try:
-        df = yf.download(symbol_code, interval="1m", period="2m")
-        if df.empty or len(df) < 2:
-            return
-
-        df["EMA5"] = df["Close"].ewm(span=5, adjust=False).mean()
-        df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-
-        last = df.iloc[-1]
-        previous = df.iloc[-2]
-
-        if previous["EMA5"] < previous["EMA20"] and last["EMA5"] > last["EMA20"]:
-            direction = "BUY"
-        elif previous["EMA5"] > previous["EMA20"] and last["EMA5"] < last["EMA20"]:
-            direction = "SELL"
-        else:
-            return
-
-        entry = round(last["Close"], 2)
-        tp = round(entry * 1.002, 2)
-        sl = round(entry * 0.998, 2)
-
-        message = (
-            f"{direction} {symbol_name}\n"
-            f"دخول: {entry}\n"
-            f"الهدف (TP): {tp}\n"
-            f"وقف الخسارة (SL): {sl}"
-        )
-        send_telegram_message(message)
-
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
+        response = requests.get(url)
+        data = response.json()
+        timestamps = data['chart']['result'][0]['timestamp']
+        prices = data['chart']['result'][0]['indicators']['quote'][0]['close']
+        df = pd.DataFrame({"Time": pd.to_datetime(timestamps, unit='s'), "Price": prices})
+        df = df.dropna().reset_index(drop=True)
+        return df
     except Exception as e:
-        error_message = f"Error with {symbol_name}: {str(e).splitlines()[0]}"
-        send_telegram_message(error_message)
-        print(traceback.format_exc())
+        raise RuntimeError(f"Error fetching {symbol}: {e}")
 
-# الصفحة الرئيسية للسيرفر
-@app.route('/')
-def home():
+def analyze(df):
+    try:
+        df['MA5'] = df['Price'].rolling(window=5).mean()
+        df['MA10'] = df['Price'].rolling(window=10).mean()
+        if df['MA5'].iloc[-2] < df['MA10'].iloc[-2] and df['MA5'].iloc[-1] > df['MA10'].iloc[-1]:
+            return True  # Buy Signal
+        return False
+    except Exception as e:
+        raise RuntimeError(f"Analysis error: {e}")
+
+def monitor():
+    while True:
+        for name, symbol in symbols.items():
+            try:
+                df = fetch_data(symbol)
+                if len(df) < 10:
+                    continue
+                if analyze(df):
+                    entry = df['Price'].iloc[-1]
+                    tp = round(entry * 1.001, 2)
+                    sl = round(entry * 0.999, 2)
+                    time_str = df['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')
+                    message = f"BUY {name}\n\nدخول: {entry}\nTP: {tp}\nSL: {sl}\nTime: {time_str}"
+                    send_message(message)
+            except Exception as e:
+                send_message(f"Error with {name}: {e}")
+        time.sleep(300)  # Wait 5 minutes
+
+@app.route("/")
+def index():
     return "Bot is running!"
 
-# تشغيل البوت في حلقة كل 5 دقائق
-def run_bot():
-    send_telegram_message("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
-    while True:
-        for name, code in SYMBOLS.items():
-            check_signal(name, code)
-            time.sleep(3)  # تأخير بسيط لتقليل الضغط على الواجهة
-        time.sleep(300)  # إعادة كل 5 دقائق
+def start():
+    send_message("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
+    threading.Thread(target=monitor).start()
 
 if __name__ == '__main__':
-    import threading
-    threading.Thread(target=run_bot).start()
+    start()
     app.run(host='0.0.0.0', port=10000)
