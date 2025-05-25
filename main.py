@@ -1,85 +1,71 @@
+from flask import Flask
 import requests
 import time
 import threading
-import yfinance as yf
-from flask import Flask
-from datetime import datetime
+import traceback
 
-# إعدادات البوت
+app = Flask(__name__)
+
+# إعدادات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
-# الأدوات
-symbols = {
-    "GOLD": "GC=F",
-    "BTC/USD": "BTC-USD",
-    "ETH/USD": "ETH-USD",
-    "US30": "^DJI",
-    "US100": "^NDX"
+# إرسال رسالة إلى تيليجرام
+def send_message(text):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": text}
+        response = requests.post(url, data=data)
+        if response.status_code != 200:
+            print("فشل الإرسال:", response.text)
+    except Exception as e:
+        print("خطأ في الإرسال:", e)
+        traceback.print_exc()
+
+# تأكيد بداية التشغيل
+send_message("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+# أدوات التداول المراد متابعتها
+SYMBOLS = {
+    "XAUUSD": "GOLD",
+    "BTC-USD": "BTC",
+    "ETH-USD": "ETH",
+    "^DJI": "US30",
+    "^NDX": "US100"
 }
 
-# إعداد Flask
-app = Flask("")
-
-@app.route("/")
-def home():
-    return "Scalping bot running!", 200
-
-# إرسال رسالة إلى تيليجرام
-def send_to_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
+def get_price_yahoo(symbol):
     try:
-        requests.post(url, data=payload)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=2m"
+        response = requests.get(url).json()
+        prices = response['chart']['result'][0]['indicators']['quote'][0]['close']
+        return prices
     except Exception as e:
-        print("فشل في إرسال الرسالة:", e)
+        print(f"خطأ في جلب السعر لـ {symbol}:", e)
+        return None
 
-# دالة توليد إشارة
-def get_signal(name, symbol):
-    try:
-        df = yf.download(symbol, period="2d", interval="5m")
-        if df.empty or len(df) < 20:
-            return f"[{name}] لا توجد بيانات كافية."
-
-        df["SMA_fast"] = df["Close"].rolling(window=5).mean()
-        df["SMA_slow"] = df["Close"].rolling(window=20).mean()
-
-        if df["SMA_fast"].iloc[-2] < df["SMA_slow"].iloc[-2] and df["SMA_fast"].iloc[-1] > df["SMA_slow"].iloc[-1]:
-            signal = "BUY"
-        elif df["SMA_fast"].iloc[-2] > df["SMA_slow"].iloc[-2] and df["SMA_fast"].iloc[-1] < df["SMA_slow"].iloc[-1]:
-            signal = "SELL"
-        else:
-            return None
-
-        entry = round(df["Close"].iloc[-1], 2)
-        tp = round(entry + 10, 2) if signal == "BUY" else round(entry - 10, 2)
-        sl = round(entry - 10, 2) if signal == "BUY" else round(entry + 10, 2)
-
-        return f"{signal} {name}\nدخول: {entry}\nTP: {tp}\nSL: {sl}"
-
-    except Exception as e:
-        return f"[{name}] خطأ أثناء التحميل: {str(e)}"
-
-# فحص جميع الأدوات
-def check_all():
-    print("✅ Running check at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    for name, symbol in symbols.items():
-        try:
-            result = get_signal(name, symbol)
-            if result:
-                send_to_telegram(result)
-        except Exception as err:
-            send_to_telegram(f"⚠️ خطأ غير متوقع في [{name}]: {str(err)}")
-
-# التشغيل التلقائي كل 5 دقائق
-def loop():
+def scalping_bot():
     while True:
         try:
-            check_all()
+            for symbol, name in SYMBOLS.items():
+                prices = get_price_yahoo(symbol)
+                if prices and len(prices) >= 2:
+                    ma1 = sum(prices[-2:]) / 2
+                    ma2 = sum(prices[-3:]) / 3
+                    if ma1 > ma2:
+                        send_message(f"BUY {name} @ {round(prices[-1], 2)}")
+                    elif ma1 < ma2:
+                        send_message(f"SELL {name} @ {round(prices[-1], 2)}")
         except Exception as e:
-            send_to_telegram(f"❌ السكربت توقف بسبب خطأ: {str(e)}")
-        time.sleep(300)
+            send_message(f"خطأ في السكربت:\n{e}")
+        time.sleep(60)  # كل دقيقة
 
-# تشغيل Flask و البوت
-threading.Thread(target=loop).start()
-app.run(host="0.0.0.0", port=81)
+# تشغيل سكربت السكالبينج في خيط منفصل
+threading.Thread(target=scalping_bot).start()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
