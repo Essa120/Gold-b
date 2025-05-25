@@ -1,64 +1,85 @@
-from flask import Flask
 import requests
-import traceback
-import datetime
-import threading
 import time
+import threading
+import yfinance as yf
+from flask import Flask
+from datetime import datetime
 
-app = Flask(__name__)
-
-# إعدادات تيليجرام
+# إعدادات البوت
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
-# دالة إرسال رسالة إلى تيليجرام
-def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": text}
-    response = requests.post(url, data=data)
-    return response.ok
+# الأدوات
+symbols = {
+    "GOLD": "GC=F",
+    "BTC/USD": "BTC-USD",
+    "ETH/USD": "ETH-USD",
+    "US30": "^DJI",
+    "US100": "^NDX"
+}
 
-# دالة تسجيل الأحداث في ملف log
-def log_event(message):
-    with open("log.txt", "a") as log:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log.write(f"[{timestamp}] {message}\n")
+# إعداد Flask
+app = Flask("")
 
-# دالة توليد الإشارة وإرسالها بشرط ذكي
-def check_and_send_signal():
-    try:
-        hour = datetime.datetime.now().hour
-        if hour % 2 == 0:
-            signal = "BUY GOLD @2350 - Smart Signal"
-            if send_telegram_message(signal):
-                log_event(f"Signal sent: {signal}")
-            else:
-                log_event("Failed to send signal.")
-        else:
-            log_event("No signal condition met.")
-    except Exception as e:
-        error_text = f"Error occurred:\n{traceback.format_exc()}"
-        send_telegram_message("حدث خطأ في السكربت:\n" + str(e))
-        log_event("Error: " + str(e))
-
-# دالة تعمل في الخلفية بشكل دائم كل دقيقة
-def run_background_scheduler():
-    while True:
-        check_and_send_signal()
-        time.sleep(60)  # كل 60 ثانية
-
-# تشغيل الخلفية مع السيرفر
-@app.before_first_request
-def activate_job():
-    thread = threading.Thread(target=run_background_scheduler)
-    thread.daemon = True
-    thread.start()
-
-# نقطة الفحص اليدوي
-@app.route('/')
+@app.route("/")
 def home():
-    return "Bot is running and sending signals automatically!"
+    return "Scalping bot running!", 200
 
-# تشغيل السيرفر
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+# إرسال رسالة إلى تيليجرام
+def send_to_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print("فشل في إرسال الرسالة:", e)
+
+# دالة توليد إشارة
+def get_signal(name, symbol):
+    try:
+        df = yf.download(symbol, period="2d", interval="5m")
+        if df.empty or len(df) < 20:
+            return f"[{name}] لا توجد بيانات كافية."
+
+        df["SMA_fast"] = df["Close"].rolling(window=5).mean()
+        df["SMA_slow"] = df["Close"].rolling(window=20).mean()
+
+        if df["SMA_fast"].iloc[-2] < df["SMA_slow"].iloc[-2] and df["SMA_fast"].iloc[-1] > df["SMA_slow"].iloc[-1]:
+            signal = "BUY"
+        elif df["SMA_fast"].iloc[-2] > df["SMA_slow"].iloc[-2] and df["SMA_fast"].iloc[-1] < df["SMA_slow"].iloc[-1]:
+            signal = "SELL"
+        else:
+            return None
+
+        entry = round(df["Close"].iloc[-1], 2)
+        tp = round(entry + 10, 2) if signal == "BUY" else round(entry - 10, 2)
+        sl = round(entry - 10, 2) if signal == "BUY" else round(entry + 10, 2)
+
+        return f"{signal} {name}\nدخول: {entry}\nTP: {tp}\nSL: {sl}"
+
+    except Exception as e:
+        return f"[{name}] خطأ أثناء التحميل: {str(e)}"
+
+# فحص جميع الأدوات
+def check_all():
+    print("✅ Running check at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    for name, symbol in symbols.items():
+        try:
+            result = get_signal(name, symbol)
+            if result:
+                send_to_telegram(result)
+        except Exception as err:
+            send_to_telegram(f"⚠️ خطأ غير متوقع في [{name}]: {str(err)}")
+
+# التشغيل التلقائي كل 5 دقائق
+def loop():
+    while True:
+        try:
+            check_all()
+        except Exception as e:
+            send_to_telegram(f"❌ السكربت توقف بسبب خطأ: {str(e)}")
+        time.sleep(300)
+
+# تشغيل Flask و البوت
+threading.Thread(target=loop).start()
+app.run(host="0.0.0.0", port=81)
