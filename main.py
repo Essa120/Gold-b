@@ -1,64 +1,79 @@
-from flask import Flask
 import requests
-import os
-import time
-import threading
+from flask import Flask
 import pandas as pd
-from datetime import datetime
-import yfinance as yf
+import time
 
 app = Flask(__name__)
 
+# بيانات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
-ALERT_FLAG_FILE = "boot_alert_sent.txt"
+SERVER_STARTED = False  # علم لتفادي تكرار رسالة التشغيل
 
-# الأدوات المطلوبة
-SYMBOLS = {
-    "GOLD": "GC=F",
-    "BTC/USD": "BTC-USD",
-    "ETH/USD": "ETH-USD",
-    "US30": "^DJI",
-    "US100": "^IXIC"
-}
-
-def send_telegram_message(text):
+# دالة إرسال رسالة تيليجرام
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": text}
-    requests.post(url, data=data)
+    data = {"chat_id": CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print("Telegram error:", e)
 
-# إرسال رسالة التشغيل مرة واحدة فقط
-def notify_on_boot():
-    if not os.path.exists(ALERT_FLAG_FILE):
-        send_telegram_message("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
-        with open(ALERT_FLAG_FILE, "w") as f:
-            f.write("sent")
-
-# السكالبينج البسيط
-def check_signals():
-    while True:
-        for name, symbol in SYMBOLS.items():
-            try:
-                df = yf.download(symbol, period="1d", interval="1m")
-                ma5 = df['Close'].rolling(window=5).mean()
-                ma20 = df['Close'].rolling(window=20).mean()
-
-                if ma5.iloc[-2] < ma20.iloc[-2] and ma5.iloc[-1] > ma20.iloc[-1]:
-                    text = f"BUY {name}\nدخول: Ticker\n{df.tail(1)}\n\nTP: Ticker\n{df.tail(1) + 10}\n\nSL: Ticker\n{df.tail(1) - 10}"
-                    send_telegram_message(text)
-
-                elif ma5.iloc[-2] > ma20.iloc[-2] and ma5.iloc[-1] < ma20.iloc[-1]:
-                    text = f"SELL {name}\nدخول: Ticker\n{df.tail(1)}\n\nTP: Ticker\n{df.tail(1) - 10}\n\nSL: Ticker\n{df.tail(1) + 10}"
-                    send_telegram_message(text)
-            except Exception as e:
-                send_telegram_message(f"Error with {name}: {e}")
-        time.sleep(300)
-
+# عند تشغيل السيرفر
 @app.route('/')
 def home():
     return "Bot is running!"
 
+# أدوات التداول لمراقبتها
+symbols = ["GOLD", "BTC/USD", "ETH/USD", "US30", "US100"]
+
+# محاكاة استراتيجية السكالبينج
+def scalping_strategy(symbol):
+    try:
+        # محاكاة بيانات (استبدلها ببيانات حقيقية من API في مشروعك النهائي)
+        data = {
+            "signal": ["BUY"], 
+            "price": [107683.02], 
+            "tp": [107693.02], 
+            "sl": [107673.02]
+        }
+        df = pd.DataFrame(data)
+
+        if df.empty:
+            return  # تجاهل لو ما فيه بيانات
+
+        signal = df.loc[0, "signal"]
+        entry = df.loc[0, "price"]
+        tp = df.loc[0, "tp"]
+        sl = df.loc[0, "sl"]
+
+        message = (
+            f"{signal} {symbol}\n"
+            f"دخول: Ticker\n{symbol}  {entry}\n"
+            f"TP: Ticker\n{symbol}  {tp}\n"
+            f"SL: Ticker\n{symbol}  {sl}"
+        )
+        send_telegram(message)
+
+    except IndexError:
+        send_telegram(f"Error with {symbol}: No data available (IndexError)")
+    except Exception as e:
+        send_telegram(f"Error with {symbol}: {str(e)}")
+
+# تشغيل كل 5 دقائق
+def run_bot():
+    global SERVER_STARTED
+    if not SERVER_STARTED:
+        send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
+        SERVER_STARTED = True
+
+    while True:
+        for symbol in symbols:
+            scalping_strategy(symbol)
+        time.sleep(300)  # انتظر 5 دقائق
+
+# بدء البوت
 if __name__ == '__main__':
-    notify_on_boot()
-    threading.Thread(target=check_signals).start()
+    from threading import Thread
+    Thread(target=run_bot).start()
     app.run(host='0.0.0.0', port=10000)
