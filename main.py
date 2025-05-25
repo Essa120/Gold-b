@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 import time
 import threading
-from datetime import datetime
 import yfinance as yf
 
 app = Flask(__name__)
@@ -13,7 +12,7 @@ BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-# الرموز
+# الرموز المطلوبة
 SYMBOLS = {
     "GOLD": "GC=F",
     "BTC/USD": "BTC-USD",
@@ -40,23 +39,25 @@ def check_signals(symbol_name, yf_symbol):
         df['MA5'] = df['Close'].rolling(window=5).mean()
         df['MA10'] = df['Close'].rolling(window=10).mean()
 
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
+        latest_ma5 = df['MA5'].iloc[-1]
+        prev_ma5 = df['MA5'].iloc[-2]
+        latest_ma10 = df['MA10'].iloc[-1]
+        prev_ma10 = df['MA10'].iloc[-2]
+        close_price = df['Close'].iloc[-1]
 
-        # تقاطع المتوسطات
-        if prev['MA5'] < prev['MA10'] and latest['MA5'] > latest['MA10']:
-            direction = "BUY"
-        elif prev['MA5'] > prev['MA10'] and latest['MA5'] < latest['MA10']:
-            direction = "SELL"
+        # تقاطع صريح للمتوسطات
+        if prev_ma5 < prev_ma10 and latest_ma5 > latest_ma10:
+            signal = "BUY"
+        elif prev_ma5 > prev_ma10 and latest_ma5 < latest_ma10:
+            signal = "SELL"
         else:
             return
 
-        entry_price = round(latest['Close'], 2)
-        tp = round(entry_price + 10, 2)
-        sl = round(entry_price - 10, 2)
+        tp = round(close_price + 10, 2)
+        sl = round(close_price - 10, 2)
 
-        msg = f"{direction} {symbol_name}\n"
-        msg += f"دخول: Ticker\n{symbol_name}  {entry_price}\n"
+        msg = f"{signal} {symbol_name}\n"
+        msg += f"دخول: Ticker\n{symbol_name}  {round(close_price, 2)}\n"
         msg += f"TP: Ticker\n{symbol_name}  {tp}\n"
         msg += f"SL: Ticker\n{symbol_name}  {sl}"
         send_telegram_message(msg)
@@ -73,7 +74,7 @@ def run_bot():
     while True:
         for name, symbol in SYMBOLS.items():
             check_signals(name, symbol)
-        time.sleep(300)  # كل 5 دقائق
+        time.sleep(300)
 
 @app.route('/')
 def home():
