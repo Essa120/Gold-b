@@ -13,7 +13,7 @@ BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-# قائمة الرموز
+# الرموز
 SYMBOLS = {
     "GOLD": "GC=F",
     "BTC/USD": "BTC-USD",
@@ -22,7 +22,6 @@ SYMBOLS = {
     "US100": "^NDX"
 }
 
-# منع تكرار رسالة التشغيل
 sent_startup_message = False
 
 def send_telegram_message(text):
@@ -33,16 +32,13 @@ def send_telegram_message(text):
 
 def check_signals(symbol_name, yf_symbol):
     try:
-        df = yf.download(yf_symbol, interval='1m', period='1d')
+        df = yf.download(yf_symbol, interval='1m', period='1d', progress=False)
 
-        if df.empty or len(df) < 2:
+        if df.empty or len(df) < 11:
             return
 
         df['MA5'] = df['Close'].rolling(window=5).mean()
         df['MA10'] = df['Close'].rolling(window=10).mean()
-
-        if df['MA5'].isnull().any() or df['MA10'].isnull().any():
-            return
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -53,12 +49,16 @@ def check_signals(symbol_name, yf_symbol):
         elif prev['MA5'] > prev['MA10'] and latest['MA5'] < latest['MA10']:
             direction = "SELL"
         else:
-            return  # لا يوجد إشارة
+            return
+
+        entry_price = round(latest['Close'], 2)
+        tp = round(entry_price + 10, 2)
+        sl = round(entry_price - 10, 2)
 
         msg = f"{direction} {symbol_name}\n"
-        msg += f"دخول: Ticker\n{symbol_name}  {latest['Close']}\n"
-        msg += f"TP: Ticker\n{symbol_name}  {latest['Close'] + 10}\n"
-        msg += f"SL: Ticker\n{symbol_name}  {latest['Close'] - 10}"
+        msg += f"دخول: Ticker\n{symbol_name}  {entry_price}\n"
+        msg += f"TP: Ticker\n{symbol_name}  {tp}\n"
+        msg += f"SL: Ticker\n{symbol_name}  {sl}"
         send_telegram_message(msg)
 
     except Exception as e:
