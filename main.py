@@ -1,82 +1,80 @@
 import requests
 import pandas as pd
-from flask import Flask
 from datetime import datetime
-import time
+from flask import Flask
 
 app = Flask(__name__)
 
-BOT_TOKEN = "توكن_البوت"
-CHAT_ID = "معرف_الشات"
+# إعدادات
+BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
+CHAT_ID = "6301054652"
+API_KEY = "4641d466300d46c587952fd42f03e811"
 
+# الأدوات
 symbols = {
-    "GOLD": "XAUUSD=X",
-    "BTC/USD": "BTC-USD",
-    "ETH/USD": "ETH-USD",
-    "US30": "^DJI",
-    "US100": "^NDX"
+    "GOLD": "XAU/USD",
+    "BTC/USD": "BTC/USD",
+    "ETH/USD": "ETH/USD",
+    "US30": "DJI",
+    "US100": "NDX"
 }
 
-# ترتيب الأدوات بالدور للتقليل من ضغط الطلبات
-symbol_list = list(symbols.items())
-symbol_index = 0
-
-def send_telegram(message):
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-    except:
-        pass
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    except Exception as e:
+        print("Telegram Error:", e)
 
-def fetch_yahoo_data(symbol):
+def fetch_data(symbol):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1min&outputsize=30&apikey={API_KEY}"
         res = requests.get(url)
-        if res.status_code == 429:
-            raise Exception("⚠️ HTTP 429 - Too Many Requests")
         data = res.json()
-        result = data.get("chart", {}).get("result", [])[0]
-        prices = result["indicators"]["quote"][0]["close"]
-        timestamps = result["timestamp"]
-        df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
-        return df.dropna()
+
+        if "values" not in data:
+            raise ValueError(data.get("message", "No data"))
+        
+        df = pd.DataFrame(data["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df.set_index("datetime", inplace=True)
+        df = df.sort_index()
+        df["close"] = df["close"].astype(float)
+        return df
     except Exception as e:
         send_telegram(f"⚠️ Error fetching {symbol}: {e}")
         return None
 
-def generate_signal():
-    global symbol_index
-    name, symbol = symbol_list[symbol_index]
-    symbol_index = (symbol_index + 1) % len(symbol_list)
+def generate_signals():
+    for name, symbol in symbols.items():
+        df = fetch_data(symbol)
+        if df is None or len(df) < 7:
+            continue
 
-    df = fetch_yahoo_data(symbol)
-    if df is None or len(df) < 10:
-        return
+        df["fast"] = df["close"].rolling(3).mean()
+        df["slow"] = df["close"].rolling(7).mean()
 
-    df["fast"] = df["price"].rolling(window=3).mean()
-    df["slow"] = df["price"].rolling(window=7).mean()
+        if df["fast"].iloc[-1] > df["slow"].iloc[-1] and df["fast"].iloc[-2] <= df["slow"].iloc[-2]:
+            entry = round(df["close"].iloc[-1], 2)
+            tp = round(entry * 1.001, 2)
+            sl = round(entry * 0.999, 2)
+            msg = (
+                f"BUY {name}\n"
+                f"دخول: {entry}\n"
+                f"TP: {tp}\n"
+                f"SL: {sl}\n"
+                f"الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+            )
+            send_telegram(msg)
 
-    if df["fast"].iloc[-1] > df["slow"].iloc[-1] and df["fast"].iloc[-2] <= df["slow"].iloc[-2]:
-        entry = round(df["price"].iloc[-1], 2)
-        tp = round(entry * 1.001, 2)
-        sl = round(entry * 0.999, 2)
-        msg = (
-            f"BUY {name}\n"
-            f"دخول: {entry}\n"
-            f"TP: {tp}\n"
-            f"SL: {sl}\n"
-            f"الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-        )
-        send_telegram(msg)
-
-@app.route('/')
+@app.route("/")
 def home():
-    return "Bot Running!"
+    return "Bot is running!"
 
-@app.route('/run')
-def run():
-    generate_signal()
-    return "Signal checked."
+@app.route("/run")
+def run_now():
+    generate_signals()
+    return "Executed."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
