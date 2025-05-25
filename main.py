@@ -18,15 +18,15 @@ symbols = {
 }
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
     except Exception as e:
         print("Telegram Error:", e)
 
 def fetch_yahoo_data(symbol, name):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
     try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
         res = requests.get(url)
         if res.status_code == 429:
             raise Exception("HTTP 429 - Too Many Requests")
@@ -46,11 +46,13 @@ def fetch_yahoo_data(symbol, name):
 def generate_signals():
     for name, symbol in symbols.items():
         df = fetch_yahoo_data(symbol, name)
-        time.sleep(5)  # تأخير بسيط بين كل أداة لتفادي الحظر
+        time.sleep(10)  # تأخير ذكي لتخفيف الضغط
         if df is None or len(df) < 10:
             continue
+
         df["fast_ma"] = df["price"].rolling(window=3).mean()
         df["slow_ma"] = df["price"].rolling(window=7).mean()
+
         if (
             df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1] and
             df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
@@ -69,13 +71,12 @@ def generate_signals():
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is running and focused only on accurate signal analysis."
 
 @app.route('/run')
 def run_now():
-    send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
     generate_signals()
-    return "Bot executed."
+    return "Signals processed."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
