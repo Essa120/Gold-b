@@ -1,6 +1,7 @@
 from flask import Flask
 import requests
 import pandas as pd
+import time
 
 app = Flask(__name__)
 
@@ -61,6 +62,8 @@ def check_signals():
 
         except Exception as e:
             send_telegram(f"Error with {name}: {str(e)}")
+
+        time.sleep(5)  # تأخير 5 ثواني بين كل أداة لتجنب الحظر
 
 @app.route('/')
 def home():
