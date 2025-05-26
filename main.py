@@ -14,7 +14,8 @@ app = Flask(__name__)
 symbols = ["XAU/USD", "BTC/USD", "ETH/USD"]
 timeframes = ["1min", "15min"]
 
-# دالة لإرسال رسالة لتيليجرام
+# إرسال رسالة لتيليجرام
+
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": msg}
@@ -23,7 +24,29 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# دالة لجلب بيانات من Twelve Data وإذا فشلت يستعمل Yahoo
+# تحويل الرمز لتنسيق Yahoo
+
+def convert_symbol_yahoo(sym):
+    if sym == "XAU/USD": return "XAUUSD=X"
+    elif sym == "BTC/USD": return "BTC-USD"
+    elif sym == "ETH/USD": return "ETH-USD"
+    return sym
+
+# جلب البيانات من Yahoo Finance
+
+def fetch_yahoo_data(symbol, interval):
+    try:
+        import yfinance as yf
+        y_symbol = convert_symbol_yahoo(symbol)
+        tf_map = {"1min": "1m", "15min": "15m"}
+        data = yf.download(tickers=y_symbol, interval=tf_map[interval], period="1d")
+        data = data[["Open", "High", "Low", "Close"]]
+        data.columns = ["open", "high", "low", "close"]
+        return data
+    except:
+        return None
+
+# جلب البيانات من Twelve Data وإذا فشلت يتحول إلى Yahoo مباشرة
 
 def fetch_data(symbol, interval):
     base_url = "https://api.twelvedata.com/time_series"
@@ -44,39 +67,14 @@ def fetch_data(symbol, interval):
             return df
         else:
             raise Exception("No values found")
-    except Exception as e:
-        send_telegram(f"⚡️ Error with Twelve Data ({symbol}): {e}\nSwitching to Yahoo Finance...")
+    except:
         return fetch_yahoo_data(symbol, interval)
 
-# يحول الرمز إلى تنسيق Yahoo
-
-def convert_symbol_yahoo(sym):
-    if sym == "XAU/USD": return "XAUUSD=X"
-    elif sym == "BTC/USD": return "BTC-USD"
-    elif sym == "ETH/USD": return "ETH-USD"
-    return sym
-
-# دالة مساعدة لجلب بيانات من Yahoo Finance
-
-def fetch_yahoo_data(symbol, interval):
-    try:
-        import yfinance as yf
-        y_symbol = convert_symbol_yahoo(symbol)
-        tf_map = {"1min": "1m", "15min": "15m"}
-        data = yf.download(tickers=y_symbol, interval=tf_map[interval], period="1d")
-        data = data[["Open", "High", "Low", "Close"]]
-        data.columns = ["open", "high", "low", "close"]
-        return data
-    except Exception as e:
-        send_telegram(f"❌ Failed to fetch Yahoo data for {symbol}: {e}")
-        return None
-
-# دالة التحليل وإرسال التوصية
+# توليد الإشارة وتحليل البيانات
 
 def analyze(symbol, tf):
     df = fetch_data(symbol, tf)
     if df is None or len(df) < 20:
-        send_telegram(f"⚠️ لا توجد بيانات كافية ل {symbol} على {tf}.")
         return
 
     last = df.iloc[-1]
@@ -95,7 +93,7 @@ def analyze(symbol, tf):
         percent = round(abs(tp - entry) / entry * 100, 1)
         send_telegram(f"{signal} {symbol}\nنسبة نجاح متوقعة: %{percent}\nدخول: {entry}\nTP: {tp}\nSL: {sl}\nUTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# تشغيل من خلال خيط مستقل
+# تشغيل متكرر كل 5 دقائق
 
 def run():
     while True:
@@ -112,7 +110,7 @@ def home():
 def runner():
     thread = threading.Thread(target=run)
     thread.start()
-    return "✔️ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7"
+    return "✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7"
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=10000)
