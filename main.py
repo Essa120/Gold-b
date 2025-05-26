@@ -5,22 +5,21 @@ from datetime import datetime
 import threading
 import time
 
-# بيانات بوت Telegram
+# بيانات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
-# إعداد Flask للسيرفر
+# إعداد Flask
 app = Flask(__name__)
 
-# رموز الأدوات المطلوبة من Yahoo Finance
+# رموز Yahoo Finance الصحيحة
 symbols = {
-    "GOLD": "XAUUSD=X",
+    "GOLD": "GC=F",       # تم استبدال XAUUSD=X بـ GC=F
     "BTC/USD": "BTC-USD",
     "ETH/USD": "ETH-USD"
 }
 
-# إرسال رسالة إلى تيليجرام
-
+# إرسال رسالة إلى Telegram
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -29,22 +28,25 @@ def send_telegram(message):
         print("Telegram Error:", e)
 
 # جلب البيانات من Yahoo Finance
-
 def fetch_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
         response = requests.get(url)
+        if response.status_code != 200:
+            raise ValueError("Invalid HTTP response")
         data = response.json()
+        if not data.get("chart") or not data["chart"].get("result"):
+            raise ValueError("No result in chart")
         result = data["chart"]["result"][0]
         prices = result["indicators"]["quote"][0]["close"]
         timestamps = result["timestamp"]
         df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="s"))
         return df.dropna()
     except Exception as e:
-        send_telegram(f"\u26a0\ufe0f خطأ في تحميل {symbol}: {str(e)}")
+        send_telegram(f"⚠️ {symbol}: خطأ في تحميل البيانات\n{str(e)}")
         return None
 
-# تحليل البيانات وإرسال التوصيات
+# تحليل البيانات وإرسال توصيات
 last_signals = {}
 
 def analyze():
@@ -76,14 +78,13 @@ def analyze():
 
         message = (
             f"{signal} {name}\n"
-            f"\u0646\u0633\u0628\u0629 \u0646\u062c\u0627\u062d \u0645\u062a\u0648\u0642\u0639\u0629: %{confidence}\n"
-            f"\u062f\u062e\u0648\u0644: {entry}\n"
+            f"نسبة نجاح متوقعة: %{confidence}\n"
+            f"دخول: {entry}\n"
             f"TP: {tp}\n"
             f"SL: {sl}\n"
             f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # فلترة التكرار
         if last_signals.get(name) != message:
             send_telegram(message)
             last_signals[name] = message
