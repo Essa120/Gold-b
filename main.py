@@ -1,116 +1,87 @@
-import requests, time
+import os
+import requests, time, threading
 import pandas as pd
 from datetime import datetime
 from flask import Flask
-import threading
+from tvdatafeed import TvDatafeed, Interval
+from dotenv import load_dotenv
+
+# تحميل متغيرات البيئة
+load_dotenv()
 
 # إعدادات البوت
-BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
-CHAT_ID = "6301054652"
-TWELVE_API_KEY = "goldapi-16d6wmitsn4c3y-io"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
+TV_EMAIL = os.getenv("TV_EMAIL")
+TV_PASSWORD = os.getenv("TV_PASSWORD")
 
+# إعداد التحقق من البيانات
+tv = TvDatafeed(username=wsxaz.2009@hotmail.com, password=Ww112233)
+
+# إعداد التطبيق
 app = Flask(__name__)
 
-symbols = ["XAU/USD", "BTC/USD", "ETH/USD"]
-timeframes = ["1min", "15min"]
+# أدوات التحليل
+symbols = ['XAU/USD', 'BTC/USD', 'ETH/USD']
+intervals = {'1min': Interval.in_1_minute, '15min': Interval.in_15_minute}
 
-# إرسال رسالة لتيليجرام
-
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg}
+# دالة لجلب البيانات مع fallback
+def get_data(symbol, tf):
     try:
-        requests.post(url, json=payload)
+        data = tv.get_hist(symbol=symbol.replace("/", ""), exchange='OANDA', interval=intervals[tf], n_bars=100)
+        if data is not None and not data.empty:
+            return data
+        else:
+            raise ValueError("Empty data")
     except Exception as e:
-        print(f"Telegram error: {e}")
-
-# تحويل الرمز لتنسيق Yahoo
-
-def convert_symbol_yahoo(sym):
-    if sym == "XAU/USD": return "XAUUSD=X"
-    elif sym == "BTC/USD": return "BTC-USD"
-    elif sym == "ETH/USD": return "ETH-USD"
-    return sym
-
-# جلب البيانات من Yahoo Finance
-
-def fetch_yahoo_data(symbol, interval):
-    try:
-        import yfinance as yf
-        y_symbol = convert_symbol_yahoo(symbol)
-        tf_map = {"1min": "1m", "15min": "15m"}
-        data = yf.download(tickers=y_symbol, interval=tf_map[interval], period="1d")
-        data = data[["Open", "High", "Low", "Close"]]
-        data.columns = ["open", "high", "low", "close"]
-        return data
-    except:
+        print(f"Error fetching {symbol} [{tf}] from TradingView: {e}")
         return None
 
-# جلب البيانات من Twelve Data وإذا فشلت يتحول إلى Yahoo مباشرة
+# تحليل بسيط وإرسال إشارة
+def analyze():
+    for symbol in symbols:
+        for tf in intervals:
+            df = get_data(symbol, tf)
+            if df is None:
+                send_message(f"⚠️ لا توجد بيانات كافية لـ {symbol} على {tf}.")
+                continue
 
-def fetch_data(symbol, interval):
-    base_url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "apikey": TWELVE_API_KEY,
-        "outputsize": 100
-    }
+            # حساب SMA و MACD كمثال
+            df['sma'] = df['close'].rolling(window=9).mean()
+            df['macd'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+
+            signal = ''
+            if df['close'].iloc[-1] > df['sma'].iloc[-1] and df['macd'].iloc[-1] > 0:
+                signal = 'BUY'
+            elif df['close'].iloc[-1] < df['sma'].iloc[-1] and df['macd'].iloc[-1] < 0:
+                signal = 'SELL'
+
+            if signal:
+                price = df['close'].iloc[-1]
+                tp = round(price * 1.001, 2) if signal == 'BUY' else round(price * 0.999, 2)
+                sl = round(price * 0.999, 2) if signal == 'BUY' else round(price * 1.001, 2)
+                send_message(f"{signal} {symbol}\nنسبة نجاح متوقعة: %2\nدخول: {price}\nTP: {tp}\nSL: {sl}\nUTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# إرسال رسالة عبر Telegram
+def send_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text}
     try:
-        r = requests.get(base_url, params=params)
-        data = r.json()
-        if "values" in data:
-            df = pd.DataFrame(data["values"])
-            df["datetime"] = pd.to_datetime(df["datetime"])
-            df.set_index("datetime", inplace=True)
-            df = df.astype(float)
-            return df
-        else:
-            raise Exception("No values found")
+        requests.post(url, data=payload)
     except:
-        return fetch_yahoo_data(symbol, interval)
+        print("خطأ في إرسال الرسالة")
 
-# توليد الإشارة وتحليل البيانات
-
-def analyze(symbol, tf):
-    df = fetch_data(symbol, tf)
-    if df is None or len(df) < 20:
-        return
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    signal = ""
-
-    if last["close"] > prev["high"]:
-        signal = "BUY"
-    elif last["close"] < prev["low"]:
-        signal = "SELL"
-
-    if signal:
-        entry = round(last["close"], 2)
-        sl = round(entry * (0.998 if signal == "BUY" else 1.002), 2)
-        tp = round(entry * (1.002 if signal == "BUY" else 0.998), 2)
-        percent = round(abs(tp - entry) / entry * 100, 1)
-        send_telegram(f"{signal} {symbol}\nنسبة نجاح متوقعة: %{percent}\nدخول: {entry}\nTP: {tp}\nSL: {sl}\nUTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# تشغيل متكرر كل 5 دقائق
+# تنفيذ تلقائي كل 5 دقائق
+@app.route('/')
+def index():
+    return 'ScalpX Bot is Running!'
 
 def run():
     while True:
-        for sym in symbols:
-            for tf in timeframes:
-                analyze(sym, tf)
+        analyze()
         time.sleep(300)
 
-@app.route('/')
-def home():
-    return "ScalpX is running"
-
-@app.route('/run')
-def runner():
-    thread = threading.Thread(target=run)
-    thread.start()
-    return "✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7"
-
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=10000)
+    threading.Thread(target=run).start()
+    app.run(host='0.0.0.0', port=10000)
