@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 from flask import Flask
 from datetime import datetime
+import numpy as np
 
 app = Flask(__name__)
 
@@ -10,13 +11,12 @@ CHAT_ID = "6301054652"
 API_KEY = "4641d466300d46c587952fd42f03e811"
 
 symbols = {
-    "GOLD": "XAU/USD",
+    "XAU/USD": "XAU/USD",
     "BTC/USD": "BTC/USD",
     "ETH/USD": "ETH/USD"
 }
 
 intervals = ["1min", "15min"]
-
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -25,67 +25,108 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-
 def fetch_data(symbol, interval):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}"
     try:
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=30&apikey={API_KEY}"
         res = requests.get(url)
         data = res.json()
-
         if "values" not in data:
-            raise ValueError(data.get("message", "No data"))
+            raise ValueError(data.get("message", "No data returned"))
 
         df = pd.DataFrame(data["values"])
-        df = df.rename(columns={"datetime": "timestamp", "close": "price"})
+        df = df.rename(columns={"datetime": "time", "close": "price"})
         df["price"] = df["price"].astype(float)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.set_index("timestamp").sort_index()
+        df = df.sort_values("time")
         return df
     except Exception as e:
         send_telegram(f"⚠️ Error fetching {symbol} [{interval}]: {e}")
         return None
 
+def calculate_indicators(df):
+    df["MA_fast"] = df["price"].rolling(window=3).mean()
+    df["MA_slow"] = df["price"].rolling(window=7).mean()
+    df["EMA"] = df["price"].ewm(span=5, adjust=False).mean()
+    df["RSI"] = compute_rsi(df["price"], 14)
+    df["MACD"] = df["price"].ewm(span=12).mean() - df["price"].ewm(span=26).mean()
+    return df
 
-def analyze():
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def analyze(df):
+    if df is None or len(df) < 20:
+        return None
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    if (
+        last["MA_fast"] > last["MA_slow"] and prev["MA_fast"] <= prev["MA_slow"]
+        and last["RSI"] < 70 and last["MACD"] > 0
+    ):
+        return "buy", last["price"]
+    elif (
+        last["MA_fast"] < last["MA_slow"] and prev["MA_fast"] >= prev["MA_slow"]
+        and last["RSI"] > 30 and last["MACD"] < 0
+    ):
+        return "sell", last["price"]
+    else:
+        return None
+
+def generate_signals():
     for name, symbol in symbols.items():
-        frames_data = []
-
+        results = []
         for interval in intervals:
             df = fetch_data(symbol, interval)
-            if df is None or len(df) < 15:
-                continue
+            if df is not None:
+                df = calculate_indicators(df)
+                result = analyze(df)
+                if result:
+                    results.append((interval, result))
 
-            df["fast"] = df["price"].rolling(window=3).mean()
-            df["slow"] = df["price"].rolling(window=7).mean()
-            df["macd"] = df["fast"] - df["slow"]
+        # فلترة الإشارات بناءً على تقاطع الفريمات
+        buys = [res for res in results if res[1][0] == "buy"]
+        sells = [res for res in results if res[1][0] == "sell"]
 
-            last_fast = df["fast"].iloc[-1]
-            last_slow = df["slow"].iloc[-1]
-            prev_fast = df["fast"].iloc[-2]
-            prev_slow = df["slow"].iloc[-2]
+        if len(buys) == len(intervals):
+            entry = round(buys[0][1][1], 2)
+            tp = round(entry * 1.001, 2)
+            sl = round(entry * 0.999, 2)
+            percent = round((tp - entry) / (entry - sl) * 100, 1)
+            msg = (
+                f"BUY {name}\n"
+                f"نسبة نجاح متوقعة: %{percent}\n"
+                f"دخول: {entry}\nTP: {tp}\nSL: {sl}\n"
+                f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            send_telegram(msg)
+        elif len(sells) == len(intervals):
+            entry = round(sells[0][1][1], 2)
+            tp = round(entry * 0.999, 2)
+            sl = round(entry * 1.001, 2)
+            percent = round((entry - tp) / (sl - entry) * 100, 1)
+            msg = (
+                f"SELL {name}\n"
+                f"نسبة نجاح متوقعة: %{percent}\n"
+                f"دخول: {entry}\nTP: {tp}\nSL: {sl}\n"
+                f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            send_telegram(msg)
 
-            signal = None
-            if last_fast > last_slow and prev_fast <= prev_slow:
-                signal = "BUY"
-            elif last_fast < last_slow and prev_fast >= prev_slow:
-                signal = "SELL"
+@app.route('/')
+def home():
+    return "Bot is running!"
 
-            if signal:
-                score = ((last_fast - last_slow) / df["price"].iloc[-1]) * 10000
-                frames_data.append((signal, round(score, 1)))
+@app.route('/run')
+def run_now():
+    send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
+    generate_signals()
+    return "Bot executed."
 
-        if not frames_data:
-            continue
-
-        # فلترة الإشارات الضعيفة
-        signals = [s for s in frames_data if abs(s[1]) >= 10]
-        if not signals:
-            continue
-
-        main_signal = max(signals, key=lambda x: x[1])
-        direction, confidence = main_signal
-        price = round(df["price"].iloc[-1], 2)
-        tp = round(price * (1.001 if direction == "BUY" else 0.999), 2)
-        sl = round(price * (0.999 if direction == "BUY" else 1.001), 2)
-
-       
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
