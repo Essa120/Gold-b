@@ -5,19 +5,16 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# إعدادات البوت
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 TWELVE_DATA_API_KEY = "4641d466300d46c587952fd42f03e811"
 
-# الأدوات المدعومة
 symbols = {
     "GOLD": "XAU/USD",
     "BTC/USD": "BTC/USD",
     "ETH/USD": "ETH/USD"
 }
 
-# إرسال رسالة إلى تليجرام
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -25,7 +22,6 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-# جلب البيانات من Twelve Data
 def fetch_data(symbol):
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
@@ -45,7 +41,6 @@ def fetch_data(symbol):
         send_telegram(f"⚠️ Error fetching {symbol}: {e}")
         return None
 
-# توليد الإشارات
 def generate_signals():
     for name, symbol in symbols.items():
         df = fetch_data(symbol)
@@ -55,39 +50,38 @@ def generate_signals():
         df["fast_ma"] = df["price"].rolling(window=3).mean()
         df["slow_ma"] = df["price"].rolling(window=7).mean()
 
-        # BUY signal
-        if (
+        # الفرق بين المتوسطات لتقدير قوة الإشارة
+        diff = abs(df["fast_ma"].iloc[-1] - df["slow_ma"].iloc[-1])
+        strength = round(min((diff / df["price"].iloc[-1]) * 10000, 100), 1)  # تقدير القوة كنسبة
+
+        if strength < 0.5:
+            continue  # إشارة ضعيفة، تجاهلها
+
+        entry = round(df["price"].iloc[-1], 2)
+        tp = round(entry * (1.001 if df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1] else 0.999), 2)
+        sl = round(entry * (0.999 if df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1] else 1.001), 2)
+        direction = "BUY" if df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1] else "SELL"
+
+        # تحقق من تقاطع حقيقي
+        crossed = (
             df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
             and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
-        ):
-            entry = round(df["price"].iloc[-1], 2)
-            tp = round(entry * 1.001, 2)
-            sl = round(entry * 0.999, 2)
-            msg = (
-                f"BUY {name}\n"
-                f"دخول: {entry}\n"
-                f"TP: {tp}\n"
-                f"SL: {sl}\n"
-                f"الوقت: {datetime.utcnow().strftime('%H:%M:%S %d-%m-%Y')} UTC"
-            )
-            send_telegram(msg)
-
-        # SELL signal
-        elif (
+        ) or (
             df["fast_ma"].iloc[-1] < df["slow_ma"].iloc[-1]
             and df["fast_ma"].iloc[-2] >= df["slow_ma"].iloc[-2]
-        ):
-            entry = round(df["price"].iloc[-1], 2)
-            tp = round(entry * 0.999, 2)
-            sl = round(entry * 1.001, 2)
+        )
+
+        if crossed:
             msg = (
-                f"SELL {name}\n"
+                f"{direction} {name}\n"
+                f"نسبة نجاح متوقعة: {strength}%\n"
                 f"دخول: {entry}\n"
                 f"TP: {tp}\n"
                 f"SL: {sl}\n"
                 f"الوقت: {datetime.utcnow().strftime('%H:%M:%S %d-%m-%Y')} UTC"
             )
-            send_telegram(msg)
+            if strength >= 0.9:  # 0.9% من السعر (تقريبًا نسبة نجاح قوية)
+                send_telegram(msg)
 
 @app.route('/')
 def home():
