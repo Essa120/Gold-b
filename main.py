@@ -5,76 +5,86 @@ from datetime import datetime
 import threading
 import time
 
-# بيانات بوت Telegram
+# إعدادات تيليجرام
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
-# إعداد Flask للسيرفر
+# مفتاح Twelve Data
+TWELVE_API_KEY = "goldapi-16d6wmitsm..."
+
+# Flask app
 app = Flask(__name__)
 
-# رموز الأدوات من Yahoo Finance
+# الرموز
 symbols = {
-    "GOLD": "XAUUSD=X",
-    "BTC/USD": "BTC-USD",
-    "ETH/USD": "ETH-USD"
+    "GOLD": {"td": "XAU/USD", "yf": "XAUUSD=X"},
+    "BTC/USD": {"td": "BTC/USD", "yf": "BTC-USD"},
+    "ETH/USD": {"td": "ETH/USD", "yf": "ETH-USD"},
 }
 
-# إرسال رسالة إلى تيليجرام
+# سجل التوصيات المرسلة لتفادي التكرار
+last_signals = {}
+
+# إرسال رسالة Telegram
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-    except Exception as e:
-        print("Telegram Error:", e)
+    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
 
-# جلب البيانات من Yahoo Finance (محسن)
-def fetch_data(symbol):
+# جلب البيانات من Twelve Data
+def fetch_from_twelve(symbol):
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1min&outputsize=15&apikey={TWELVE_API_KEY}"
+        response = requests.get(url)
+        data = response.json()
+        if "values" not in data:
+            raise Exception("No values in Twelve Data response")
+        df = pd.DataFrame(data["values"])
+        df = df.rename(columns={"datetime": "time", "close": "price"})
+        df["time"] = pd.to_datetime(df["time"])
+        df["price"] = pd.to_numeric(df["price"])
+        df = df.sort_values("time")
+        return df.set_index("time")
+    except Exception as e:
+        raise Exception(f"TwelveData error: {e}")
+
+# جلب البيانات من Yahoo Finance
+def fetch_from_yahoo(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers)
-        
-        if response.status_code != 200:
-            raise ValueError(f"HTTP {response.status_code} error")
-
+        if response.status_code != 200 or not response.content.strip().startswith(b'{'):
+            raise Exception("Invalid Yahoo response")
         data = response.json()
-        
-        if "chart" not in data or "result" not in data["chart"] or not data["chart"]["result"]:
-            raise ValueError("No chart data")
-
         result = data["chart"]["result"][0]
         prices = result["indicators"]["quote"][0]["close"]
         timestamps = result["timestamp"]
         df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="s"))
         return df.dropna()
-
     except Exception as e:
-        send_telegram(f"⚠️ {symbol}: خطأ في تحميل البيانات\n{str(e)}")
-        return None
+        raise Exception(f"Yahoo error: {e}")
 
-# تحليل البيانات وإرسال التوصيات
-last_signals = {}
-
+# تحليل البيانات
 def analyze():
-    for name, symbol in symbols.items():
-        df = fetch_data(symbol)
+    for label, symbol_info in symbols.items():
+        try:
+            df = fetch_from_twelve(symbol_info["td"])
+        except:
+            try:
+                df = fetch_from_yahoo(symbol_info["yf"])
+            except Exception as e:
+                send_telegram(f"⚠️ {label}: فشل تحميل البيانات من جميع المصادر\n{e}")
+                continue
+
         if df is None or len(df) < 10:
             continue
 
         df["fast_ma"] = df["price"].rolling(window=3).mean()
         df["slow_ma"] = df["price"].rolling(window=7).mean()
 
-        if (
-            df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
-            and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
-        ):
+        if df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1] and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]:
             signal = "BUY"
-        elif (
-            df["fast_ma"].iloc[-1] < df["slow_ma"].iloc[-1]
-            and df["fast_ma"].iloc[-2] >= df["slow_ma"].iloc[-2]
-        ):
+        elif df["fast_ma"].iloc[-1] < df["slow_ma"].iloc[-1] and df["fast_ma"].iloc[-2] >= df["slow_ma"].iloc[-2]:
             signal = "SELL"
         else:
             continue
@@ -85,7 +95,7 @@ def analyze():
         confidence = round(abs(df["fast_ma"].iloc[-1] - df["slow_ma"].iloc[-1]) / entry * 100, 1)
 
         message = (
-            f"{signal} {name}\n"
+            f"{signal} {label}\n"
             f"نسبة نجاح متوقعة: %{confidence}\n"
             f"دخول: {entry}\n"
             f"TP: {tp}\n"
@@ -93,16 +103,15 @@ def analyze():
             f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        if last_signals.get(name) != message:
+        if last_signals.get(label) != message:
             send_telegram(message)
-            last_signals[name] = message
+            last_signals[label] = message
 
-# صفحة الفحص
+# تشغيل التحليل دوريًا
 @app.route('/')
 def index():
-    return 'ScalpX Bot is Running!'
+    return 'ScalpX bot running'
 
-# تشغيل التحليل كل 5 دقائق
 def run_loop():
     while True:
         analyze()
@@ -110,4 +119,4 @@ def run_loop():
 
 if __name__ == '__main__':
     threading.Thread(target=run_loop).start()
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host="0.0.0.0", port=10000)
