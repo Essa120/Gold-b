@@ -1,4 +1,3 @@
-
 import requests
 import pandas as pd
 from flask import Flask
@@ -6,14 +5,14 @@ from datetime import datetime
 import threading
 import time
 
-# بيانات بوت Telegram - خاصة
+# بيانات بوت Telegram
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
 # إعداد Flask للسيرفر
 app = Flask(__name__)
 
-# رموز الأدوات المطلوبة من Yahoo Finance
+# رموز الأدوات من Yahoo Finance
 symbols = {
     "GOLD": "XAUUSD=X",
     "BTC/USD": "BTC-USD",
@@ -28,19 +27,31 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-# جلب البيانات من Yahoo Finance
+# جلب البيانات من Yahoo Finance (محسن)
 def fetch_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
-        response = requests.get(url)
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            raise ValueError(f"HTTP {response.status_code} error")
+
         data = response.json()
+        
+        if "chart" not in data or "result" not in data["chart"] or not data["chart"]["result"]:
+            raise ValueError("No chart data")
+
         result = data["chart"]["result"][0]
         prices = result["indicators"]["quote"][0]["close"]
         timestamps = result["timestamp"]
         df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="s"))
         return df.dropna()
+
     except Exception as e:
-        send_telegram(f"⚠️ خطأ في تحميل {symbol}: {str(e)}")
+        send_telegram(f"⚠️ {symbol}: خطأ في تحميل البيانات\n{str(e)}")
         return None
 
 # تحليل البيانات وإرسال التوصيات
@@ -82,15 +93,16 @@ def analyze():
             f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # فلترة التكرار
         if last_signals.get(name) != message:
             send_telegram(message)
             last_signals[name] = message
 
+# صفحة الفحص
 @app.route('/')
 def index():
     return 'ScalpX Bot is Running!'
 
+# تشغيل التحليل كل 5 دقائق
 def run_loop():
     while True:
         analyze()
