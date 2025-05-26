@@ -1,109 +1,100 @@
-import os, time, threading, requests
+import requests
 import pandas as pd
-import yfinance as yf
 from flask import Flask
 from datetime import datetime
-from dotenv import load_dotenv
+import threading
+import time
 
-load_dotenv()
+# بيانات بوت Telegram
+BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
+CHAT_ID = "6301054652"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
-
+# إعداد Flask للسيرفر
 app = Flask(__name__)
 
+# رموز الأدوات المطلوبة من Yahoo Finance
 symbols = {
-    'XAUUSD': 'XAU/USD',
-    'BTC-USD': 'BTC/USD',
-    'ETH-USD': 'ETH/USD'
+    "GOLD": "XAUUSD=X",
+    "BTC/USD": "BTC-USD",
+    "ETH/USD": "ETH-USD"
 }
 
-interval_map = {
-    '1m': '1m',
-    '5m': '5m',
-    '15m': '15m',
-    '30m': '30m'
-}
-
-last_signals = {}
-
-def get_data(symbol, interval):
+# إرسال رسالة إلى تيليجرام
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={TWELVE_API_KEY}&outputsize=100"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+    except Exception as e:
+        print("Telegram Error:", e)
+
+# جلب البيانات من Yahoo Finance
+def fetch_data(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
         response = requests.get(url)
         data = response.json()
-        if "values" in data:
-            df = pd.DataFrame(data["values"])
-            df = df.rename(columns={"datetime": "time"})
-            df["time"] = pd.to_datetime(df["time"])
-            df = df.astype(float, errors='ignore')
-            df = df.sort_values("time")
-            return df
-        else:
-            raise Exception("No values found")
-    except:
-        try:
-            df = yf.download(tickers=symbol, interval=interval, period="1d", progress=False)
-            if not df.empty:
-                df = df.reset_index()
-                df = df.rename(columns={"Datetime": "time"})
-                return df
-        except:
-            return None
-    return None
+        result = data["chart"]["result"][0]
+        prices = result["indicators"]["quote"][0]["close"]
+        timestamps = result["timestamp"]
+        df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="s"))
+        return df.dropna()
+    except Exception as e:
+        send_telegram(f"⚠️ خطأ في تحميل {symbol}: {str(e)}")
+        return None
+
+# تحليل البيانات وإرسال التوصيات
+last_signals = {}
 
 def analyze():
-    for yf_symbol, alias in symbols.items():
-        sent = False
-        for interval in interval_map:
-            df = get_data(yf_symbol, interval)
-            if df is None or len(df) < 20:
-                continue
+    for name, symbol in symbols.items():
+        df = fetch_data(symbol)
+        if df is None or len(df) < 10:
+            continue
 
-            df['sma'] = df['close'].rolling(window=9).mean()
-            df['macd'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+        df["fast_ma"] = df["price"].rolling(window=3).mean()
+        df["slow_ma"] = df["price"].rolling(window=7).mean()
 
-            signal = ''
-            if df['close'].iloc[-1] > df['sma'].iloc[-1] and df['macd'].iloc[-1] > 0:
-                signal = 'BUY'
-            elif df['close'].iloc[-1] < df['sma'].iloc[-1] and df['macd'].iloc[-1] < 0:
-                signal = 'SELL'
+        if (
+            df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
+            and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
+        ):
+            signal = "BUY"
+        elif (
+            df["fast_ma"].iloc[-1] < df["slow_ma"].iloc[-1]
+            and df["fast_ma"].iloc[-2] >= df["slow_ma"].iloc[-2]
+        ):
+            signal = "SELL"
+        else:
+            continue
 
-            if signal:
-                price = df['close'].iloc[-1]
-                entry_key = f"{alias}-{signal}-{interval}"
-                if entry_key == last_signals.get(alias):
-                    return
-                last_signals[alias] = entry_key
+        entry = round(df["price"].iloc[-1], 2)
+        tp = round(entry * 1.001, 2) if signal == "BUY" else round(entry * 0.999, 2)
+        sl = round(entry * 0.999, 2) if signal == "BUY" else round(entry * 1.001, 2)
+        confidence = round(abs(df["fast_ma"].iloc[-1] - df["slow_ma"].iloc[-1]) / entry * 100, 1)
 
-                tp = round(price * 1.001, 2) if signal == 'BUY' else round(price * 0.999, 2)
-                sl = round(price * 0.999, 2) if signal == 'BUY' else round(price * 1.001, 2)
-                text = f"{signal} {alias}\nنسبة نجاح متوقعة: 0.2%\nدخول: {price}\nTP: {tp}\nSL: {sl}\nUTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
-                send_message(text)
-                sent = True
-                break
+        message = (
+            f"{signal} {name}\n"
+            f"نسبة نجاح متوقعة: %{confidence}\n"
+            f"دخول: {entry}\n"
+            f"TP: {tp}\n"
+            f"SL: {sl}\n"
+            f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
-        if not sent:
-            send_message(f"⚠️ لا توجد بيانات كافية لـ {alias} على جميع الفريمات المتاحة.")
-
-def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": text}
-    try:
-        requests.post(url, data=data)
-    except:
-        pass
+        # فلترة التكرار
+        if last_signals.get(name) != message:
+            send_telegram(message)
+            last_signals[name] = message
 
 @app.route('/')
-def home():
-    return "ScalpX Bot is Running!"
+def index():
+    return 'ScalpX Bot is Running!'
 
-def run_bot():
+def run_loop():
     while True:
         analyze()
         time.sleep(300)
 
 if __name__ == '__main__':
-    threading.Thread(target=run_bot).start()
+    threading.Thread(target=run_loop).start()
     app.run(host='0.0.0.0', port=10000)
