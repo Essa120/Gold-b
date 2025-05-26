@@ -8,74 +8,110 @@ from dotenv import load_dotenv
 
 # تحميل متغيرات البيئة
 load_dotenv()
-
-# إعدادات البوت
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 TV_EMAIL = os.getenv("TV_EMAIL")
 TV_PASSWORD = os.getenv("TV_PASSWORD")
 
-# تسجيل الدخول في TradingView
+# الاتصال بـ TradingView
 tv = TvDatafeed(username=TV_EMAIL, password=TV_PASSWORD)
 
-# إعداد التطبيق
+# إعداد Flask
 app = Flask(__name__)
 
-# أدوات التحليل
 symbols = ['XAU/USD', 'BTC/USD', 'ETH/USD']
-intervals = {'1min': Interval.in_1_minute, '15min': Interval.in_15_minute}
+intervals = {
+    '1min': Interval.in_1_minute,
+    '15min': Interval.in_15_minute
+}
 
-# دالة لجلب البيانات
+last_signals = {}
+
+# إرسال رسالة
+def send_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text}
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+# جلب البيانات
 def get_data(symbol, tf):
     try:
-        data = tv.get_hist(symbol=symbol.replace("/", ""), exchange='OANDA', interval=intervals[tf], n_bars=100)
-        if data is not None and not data.empty:
-            return data
-        else:
-            raise ValueError("No data")
+        df = tv.get_hist(symbol.replace("/", ""), exchange='OANDA', interval=intervals[tf], n_bars=100)
+        return df if df is not None and not df.empty else None
     except Exception as e:
         print(f"Error fetching {symbol} [{tf}]: {e}")
         return None
 
-# تحليل البيانات وإرسال التوصيات
+# تحليل الإشارة
 def analyze():
+    global last_signals
     for symbol in symbols:
+        best_signal = None
+        best_score = 0
+
         for tf in intervals:
             df = get_data(symbol, tf)
             if df is None:
                 send_message(f"⚠️ لا توجد بيانات كافية لـ {symbol} على {tf}.")
                 continue
 
-            # مؤشرات SMA و MACD
             df['sma'] = df['close'].rolling(window=9).mean()
-            df['macd'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+            df['macd'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
 
-            signal = ''
-            if df['close'].iloc[-1] > df['sma'].iloc[-1] and df['macd'].iloc[-1] > 0:
+            last = df.iloc[-1]
+            price = round(last['close'], 2)
+            signal = None
+
+            if last['close'] > last['sma'] and last['macd'] > 0:
                 signal = 'BUY'
-            elif df['close'].iloc[-1] < df['sma'].iloc[-1] and df['macd'].iloc[-1] < 0:
+            elif last['close'] < last['sma'] and last['macd'] < 0:
                 signal = 'SELL'
 
-            if signal:
-                price = df['close'].iloc[-1]
-                tp = round(price * 1.001, 2) if signal == 'BUY' else round(price * 0.999, 2)
-                sl = round(price * 0.999, 2) if signal == 'BUY' else round(price * 1.001, 2)
-                send_message(f"{signal} {symbol}\nنسبة نجاح متوقعة: %2\nدخول: {price}\nTP: {tp}\nSL: {sl}\nUTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+            if not signal:
+                continue
 
-# إرسال رسالة تلغرام
-def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    try:
-        requests.post(url, data=payload)
-    except:
-        print("خطأ في إرسال الرسالة")
+            # نسبة نجاح وهمية (لتقييم الإشارة)
+            score = abs(last['macd']) * 100 / price
+            if score > best_score:
+                best_score = score
+                best_signal = {
+                    'signal': signal,
+                    'price': price,
+                    'tp': round(price * (1.001 if signal == 'BUY' else 0.999), 2),
+                    'sl': round(price * (0.999 if signal == 'BUY' else 1.001), 2),
+                    'score': round(score, 1),
+                    'symbol': symbol,
+                    'time': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                }
 
+        if best_signal:
+            key = f"{symbol}_{best_signal['signal']}"
+            last_time = last_signals.get(key)
+            now = time.time()
+
+            # منع التكرار أو التضارب
+            if last_time and now - last_time < 300:
+                continue
+            last_signals[key] = now
+
+            send_message(
+                f"{best_signal['signal']} {best_signal['symbol']}\n"
+                f"نسبة نجاح متوقعة: %{best_signal['score']}\n"
+                f"دخول: {best_signal['price']}\n"
+                f"TP: {best_signal['tp']}\n"
+                f"SL: {best_signal['sl']}\n"
+                f"UTC {best_signal['time']}"
+            )
+
+# نقطة تشغيل API
 @app.route('/')
 def index():
     return 'ScalpX Bot is Running!'
 
+# تشغيل دائم
 def run():
     while True:
         analyze()
