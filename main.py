@@ -16,10 +16,8 @@ symbols = {
 }
 
 intervals = ["1min", "15min"]
-
-# إعداد معامل الربح والخسارة لحساب سبريد منخفض ورأس مال صغير
 TP_SPREAD = 0.001  # 0.1%
-SL_SPREAD = 0.001  # 0.1%
+SL_SPREAD = 0.001
 
 
 def send_telegram(message):
@@ -44,14 +42,6 @@ def fetch_data(symbol, interval):
         return None
 
 
-def calculate_indicators(df):
-    df["fast_ma"] = df["close"].rolling(window=3).mean()
-    df["slow_ma"] = df["close"].rolling(window=7).mean()
-    df["rsi"] = ta_rsi(df["close"], 14)
-    df["macd"], df["macd_signal"] = ta_macd(df["close"])
-    return df
-
-
 def ta_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
@@ -70,52 +60,72 @@ def ta_macd(series, fast=12, slow=26, signal=9):
     return macd, signal_line
 
 
-def evaluate_signal(df):
-    cond_buy = (
-        df["fast_ma"].iloc[-1] > df["slow_ma"].iloc[-1]
-        and df["fast_ma"].iloc[-2] <= df["slow_ma"].iloc[-2]
-        and df["rsi"].iloc[-1] < 70
-        and df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]
-    )
-    cond_sell = (
-        df["fast_ma"].iloc[-1] < df["slow_ma"].iloc[-1]
-        and df["fast_ma"].iloc[-2] >= df["slow_ma"].iloc[-2]
-        and df["rsi"].iloc[-1] > 30
-        and df["macd"].iloc[-1] < df["macd_signal"].iloc[-1]
-    )
-    return cond_buy, cond_sell
+def calculate_indicators(df):
+    df["fast_ma"] = df["close"].rolling(window=3).mean()
+    df["slow_ma"] = df["close"].rolling(window=7).mean()
+    df["rsi"] = ta_rsi(df["close"], 14)
+    df["macd"], df["macd_signal"] = ta_macd(df["close"])
+    df["vol_avg"] = df["volume"].rolling(window=10).mean()
+    return df
 
 
 def generate_signals():
     for name, symbol in symbols.items():
-        for interval in intervals:
-            df = fetch_data(symbol, interval)
-            if df is None or len(df) < 30:
-                continue
-            df = calculate_indicators(df)
+        df_1m = fetch_data(symbol, "1min")
+        df_15m = fetch_data(symbol, "15min")
+        if df_1m is None or df_15m is None or len(df_1m) < 30 or len(df_15m) < 30:
+            continue
 
-            cond_buy, cond_sell = evaluate_signal(df)
+        df_1m = calculate_indicators(df_1m)
+        df_15m = calculate_indicators(df_15m)
 
-            price = round(df["close"].iloc[-1], 2)
-            tp = round(price * (1 + TP_SPREAD), 2)
-            sl = round(price * (1 - TP_SPREAD), 2)
+        last = df_1m.iloc[-1]
+        prev = df_1m.iloc[-2]
+        trend_15m = df_15m["fast_ma"].iloc[-1] > df_15m["slow_ma"].iloc[-1]
+        downtrend_15m = df_15m["fast_ma"].iloc[-1] < df_15m["slow_ma"].iloc[-1]
 
-            if cond_buy:
-                msg = (
-                    f"BUY {name}\n"
-                    f"نسبة نجاح متوقعة: %99.0\n"
-                    f"دخول: {price}\nTP: {tp}\nSL: {sl}\n"
-                    f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                send_telegram(msg)
-            elif cond_sell:
-                msg = (
-                    f"SELL {name}\n"
-                    f"نسبة نجاح متوقعة: %99.0\n"
-                    f"دخول: {price}\nTP: {sl}\nSL: {tp}\n"
-                    f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                send_telegram(msg)
+        green_candle = last["close"] > last["open"]
+        red_candle = last["close"] < last["open"]
+        high_volume = last["volume"] > last["vol_avg"]
+
+        # BUY conditions
+        buy = (
+            prev["fast_ma"] <= prev["slow_ma"] < last["fast_ma"] > last["slow_ma"] and
+            last["macd"] > last["macd_signal"] and
+            last["rsi"] < 70 and
+            trend_15m and green_candle and high_volume
+        )
+
+        # SELL conditions
+        sell = (
+            prev["fast_ma"] >= prev["slow_ma"] > last["fast_ma"] < last["slow_ma"] and
+            last["macd"] < last["macd_signal"] and
+            last["rsi"] > 30 and
+            downtrend_15m and red_candle and high_volume
+        )
+
+        price = round(last["close"], 2)
+        tp = round(price * (1 + TP_SPREAD), 2)
+        sl = round(price * (1 - TP_SPREAD), 2)
+
+        if buy:
+            msg = (
+                f"BUY {name}\n"
+                f"نسبة نجاح متوقعة: %99\n"
+                f"دخول: {price}\nTP: {tp}\nSL: {sl}\n"
+                f"الفريم: 1m + تأكيد 15m\n"
+                f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            send_telegram(msg)
+        elif sell:
+            msg = (
+                f"SELL {name}\n"
+                f"نسبة نجاح متوقعة: %99\n"
+                f"دخول: {price}\nTP: {sl}\nSL: {tp}\n"
+                f"الفريم: 1m + تأكيد 15m\n"
+                f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            send_telegram(msg)
 
 
 @app.route('/')
