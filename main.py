@@ -16,8 +16,8 @@ TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 TV_EMAIL = os.getenv("TV_EMAIL")
 TV_PASSWORD = os.getenv("TV_PASSWORD")
 
-# إعداد التحقق من البيانات
-tv = TvDatafeed(username=wsxaz.2009@hotmail.com, password=Ww112233)
+# تسجيل الدخول في TradingView
+tv = TvDatafeed(username=TV_EMAIL, password=TV_PASSWORD)
 
 # إعداد التطبيق
 app = Flask(__name__)
@@ -26,19 +26,19 @@ app = Flask(__name__)
 symbols = ['XAU/USD', 'BTC/USD', 'ETH/USD']
 intervals = {'1min': Interval.in_1_minute, '15min': Interval.in_15_minute}
 
-# دالة لجلب البيانات مع fallback
+# دالة لجلب البيانات
 def get_data(symbol, tf):
     try:
         data = tv.get_hist(symbol=symbol.replace("/", ""), exchange='OANDA', interval=intervals[tf], n_bars=100)
         if data is not None and not data.empty:
             return data
         else:
-            raise ValueError("Empty data")
+            raise ValueError("No data")
     except Exception as e:
-        print(f"Error fetching {symbol} [{tf}] from TradingView: {e}")
+        print(f"Error fetching {symbol} [{tf}]: {e}")
         return None
 
-# تحليل بسيط وإرسال إشارة
+# تحليل البيانات وإرسال التوصيات
 def analyze():
     for symbol in symbols:
         for tf in intervals:
@@ -47,7 +47,7 @@ def analyze():
                 send_message(f"⚠️ لا توجد بيانات كافية لـ {symbol} على {tf}.")
                 continue
 
-            # حساب SMA و MACD كمثال
+            # مؤشرات SMA و MACD
             df['sma'] = df['close'].rolling(window=9).mean()
             df['macd'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
 
@@ -63,7 +63,7 @@ def analyze():
                 sl = round(price * 0.999, 2) if signal == 'BUY' else round(price * 1.001, 2)
                 send_message(f"{signal} {symbol}\nنسبة نجاح متوقعة: %2\nدخول: {price}\nTP: {tp}\nSL: {sl}\nUTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# إرسال رسالة عبر Telegram
+# إرسال رسالة تلغرام
 def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text}
@@ -72,7 +72,6 @@ def send_message(text):
     except:
         print("خطأ في إرسال الرسالة")
 
-# تنفيذ تلقائي كل 5 دقائق
 @app.route('/')
 def index():
     return 'ScalpX Bot is Running!'
