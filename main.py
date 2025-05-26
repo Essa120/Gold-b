@@ -1,94 +1,133 @@
-import requests
+import requests, time
 import pandas as pd
 from datetime import datetime
 from flask import Flask
+import threading
 
-app = Flask(__name__)
-
-# إعدادات التوكن و Chat ID
+# إعدادات البوت
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
-API_KEY = "4641d466300d46c587952fd42f03e811"
+TWELVE_API_KEY = "goldapi-16d6wmitsmb3hf9kp-io"
 
-# الأدوات المطلوبة
+# الأدوات
 symbols = {
     "GOLD": "XAU/USD",
     "BTC/USD": "BTC/USD",
     "ETH/USD": "ETH/USD"
 }
 
-# إرسال رسالة تيليجرام
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-
-# جلب بيانات من Twelve Data
-def fetch_data(symbol, interval):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}"
-    try:
-        res = requests.get(url)
-        data = res.json()
-        if "values" in data:
-            df = pd.DataFrame(data["values"])
-            df["datetime"] = pd.to_datetime(df["datetime"])
-            df.set_index("datetime", inplace=True)
-            df = df.astype(float)
-            return df.sort_index()
-        else:
-            raise ValueError(data.get("message", "Unknown error"))
-    except Exception as e:
-        send_telegram(f"⚠️ Error fetching {symbol} [{interval}]: {e}")
-        return None
-
-# تحليل EMA + MACD وإصدار توصيات
-def analyze_signals(symbol, df):
-    df["EMA5"] = df["close"].ewm(span=5).mean()
-    df["EMA20"] = df["close"].ewm(span=20).mean()
-    df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-    df["Signal"] = df["MACD"].ewm(span=9).mean()
-
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    price = round(latest["close"], 2)
-    time = latest.name.strftime('%Y-%m-%d %H:%M:%S')
-
-    signal = None
-    if latest["EMA5"] > latest["EMA20"] and prev["EMA5"] <= prev["EMA20"] and latest["MACD"] > latest["Signal"]:
-        signal = "BUY"
-    elif latest["EMA5"] < latest["EMA20"] and prev["EMA5"] >= prev["EMA20"] and latest["MACD"] < latest["Signal"]:
-        signal = "SELL"
-
-    if signal:
-        tp = round(price * 1.001, 2)
-        sl = round(price * 0.999, 2)
-        success_chance = round(abs((latest["MACD"] - latest["Signal"]) * 100), 2)
-        msg = (
-            f"{signal} {symbol}\n"
-            f"نسبة نجاح متوقعة: %{success_chance}\n"
-            f"دخول: {price}\n"
-            f"TP: {tp}\n"
-            f"SL: {sl}\n"
-            f"UTC {time}"
-        )
-        send_telegram(msg)
-
-# تنفيذ الدورة الكاملة
-def run_bot():
-    for name, code in symbols.items():
-        df = fetch_data(code, "1min")
-        if df is not None and len(df) >= 30:
-            analyze_signals(name, df)
+# إعداد السيرفر
+app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Scalping Bot is Running!"
+    return "ScalpX bot is running!", 200
 
-@app.route("/run")
-def manual_run():
-    send_telegram("✅ تم تشغيل السيرفر بنجاح! البوت يعمل الآن 24/7")
-    run_bot()
-    return "Bot Executed!"
+# إرسال رسالة إلى تليجرام
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=data)
+    except:
+        pass
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+# جلب البيانات من Twelve Data
+def fetch_from_twelve(symbol, interval):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={TWELVE_API_KEY}&outputsize=100"
+    try:
+        res = requests.get(url).json()
+        if "values" not in res: raise ValueError("Twelve Data Error")
+        df = pd.DataFrame(res["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df.set_index("datetime", inplace=True)
+        df = df.astype(float)
+        return df.sort_index()
+    except:
+        return None
+
+# جلب البيانات من Yahoo Finance
+def fetch_from_yahoo(symbol_yf, interval):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_yf}?interval={interval}&range=1d"
+        res = requests.get(url).json()
+        result = res["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        prices = result["indicators"]["quote"][0]["close"]
+        df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit='s'))
+        return df.dropna()
+    except:
+        return None
+
+# تحليل البيانات
+def analyze(df):
+    df["ma_fast"] = df["price"].rolling(window=3).mean()
+    df["ma_slow"] = df["price"].rolling(window=7).mean()
+    df["macd"] = df["price"].ewm(span=12, adjust=False).mean() - df["price"].ewm(span=26, adjust=False).mean()
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    entry = round(last["price"], 2)
+    tp = round(entry * 1.001, 2)
+    sl = round(entry * 0.999, 2)
+
+    signal = None
+    if last["ma_fast"] > last["ma_slow"] and prev["ma_fast"] <= prev["ma_slow"] and last["macd"] > last["macd_signal"]:
+        signal = "BUY"
+    elif last["ma_fast"] < last["ma_slow"] and prev["ma_fast"] >= prev["ma_slow"] and last["macd"] < last["macd_signal"]:
+        signal = "SELL"
+
+    if signal:
+        accuracy = round(abs((last["macd"] - last["macd_signal"]) * 100), 1)
+        return signal, entry, tp, sl, accuracy
+    return None
+
+# فحص التوصيات
+def check_signals():
+    for name, code in symbols.items():
+        for interval in ["1min", "15min"]:
+            df = fetch_from_twelve(code, interval)
+            source = "Twelve Data"
+
+            if df is None or len(df) < 30:
+                # التبديل إلى Yahoo
+                yahoo_codes = {
+                    "GOLD": "XAUUSD=X",
+                    "BTC/USD": "BTC-USD",
+                    "ETH/USD": "ETH-USD"
+                }
+                df = fetch_from_yahoo(yahoo_codes[name], "1m" if interval == "1min" else "15m")
+                source = "Yahoo Finance"
+
+            if df is None or len(df) < 30:
+                send_telegram(f"⚠️ لا توجد بيانات كافية لـ {name} على {interval}.")
+                continue
+
+            signal = analyze(df)
+            if signal:
+                side, entry, tp, sl, acc = signal
+                if acc < 50: continue  # فلترة نسب النجاح الضعيفة
+                msg = (
+                    f"{side} {name}\n"
+                    f"نسبة نجاح متوقعة: %{acc}\n"
+                    f"دخول: {entry}\n"
+                    f"TP: {tp}\n"
+                    f"SL: {sl}\n"
+                    f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                send_telegram(msg)
+
+# تكرار كل 5 دقائق
+def loop():
+    while True:
+        try:
+            check_signals()
+        except Exception as e:
+            send_telegram(f"❌ خطأ عام: {e}")
+        time.sleep(300)
+
+# بدء التشغيل
+threading.Thread(target=loop).start()
+app.run(host="0.0.0.0", port=10000)
