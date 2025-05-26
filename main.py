@@ -6,14 +6,14 @@ from datetime import datetime
 import threading
 import time
 
-# بيانات بوت Telegram
+# بيانات بوت Telegram - خاصة
 BOT_TOKEN = "7621940570:AAH4fS66qAJXn6h33AzRJK7Nk8tiIwwR_kg"
 CHAT_ID = "6301054652"
 
 # إعداد Flask للسيرفر
 app = Flask(__name__)
 
-# رموز الأدوات المطلوبة
+# رموز الأدوات المطلوبة من Yahoo Finance
 symbols = {
     "GOLD": "XAUUSD=X",
     "BTC/USD": "BTC-USD",
@@ -40,7 +40,7 @@ def fetch_data(symbol):
         df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="s"))
         return df.dropna()
     except Exception as e:
-        print(f"Error fetching data for {symbol}: {e}")
+        send_telegram(f"⚠️ خطأ في تحميل {symbol}: {str(e)}")
         return None
 
 # تحليل البيانات وإرسال التوصيات
@@ -74,16 +74,11 @@ def analyze():
         confidence = round(abs(df["fast_ma"].iloc[-1] - df["slow_ma"].iloc[-1]) / entry * 100, 1)
 
         message = (
-            f"{signal} {name}
-"
-            f"نسبة نجاح متوقعة: %{confidence}
-"
-            f"دخول: {entry}
-"
-            f"TP: {tp}
-"
-            f"SL: {sl}
-"
+            f"{signal} {name}\n"
+            f"نسبة نجاح متوقعة: %{confidence}\n"
+            f"دخول: {entry}\n"
+            f"TP: {tp}\n"
+            f"SL: {sl}\n"
             f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
