@@ -20,6 +20,7 @@ symbols = {
 }
 
 # إرسال رسالة إلى تيليجرام
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -28,6 +29,7 @@ def send_telegram(message):
         print("Telegram Error:", e)
 
 # جلب البيانات من Yahoo Finance
+
 def fetch_data(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=15m"
@@ -39,7 +41,7 @@ def fetch_data(symbol):
         df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="s"))
         return df.dropna()
     except Exception as e:
-        send_telegram(f"⚠️ خطأ في تحميل {symbol}: {str(e)}")
+        send_telegram(f"\u26a0\ufe0f خطأ في تحميل {symbol}: {str(e)}")
         return None
 
 # تحليل البيانات وإرسال التوصيات
@@ -74,8 +76,8 @@ def analyze():
 
         message = (
             f"{signal} {name}\n"
-            f"نسبة نجاح متوقعة: %{confidence}\n"
-            f"دخول: {entry}\n"
+            f"\u0646\u0633\u0628\u0629 \u0646\u062c\u0627\u062d \u0645\u062a\u0648\u0642\u0639\u0629: %{confidence}\n"
+            f"\u062f\u062e\u0648\u0644: {entry}\n"
             f"TP: {tp}\n"
             f"SL: {sl}\n"
             f"UTC {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
